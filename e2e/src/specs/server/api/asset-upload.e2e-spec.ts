@@ -176,16 +176,17 @@ describe('/upload', () => {
       const req = httpRequest({
         hostname: 'localhost',
         port: 2285,
-        path: '/upload',
+        path: '/api/upload',
         method: 'POST',
         headers: {
           Authorization: `Bearer ${user.accessToken}`,
           'X-Immich-Asset-Data': assetData,
           'Repr-Digest': `sha=:${checksum}:`,
-          'Content-Length': '1024',
+          'Content-Length': content.byteLength.toString(),
           'Content-Type': 'image/jpeg',
         },
       });
+      req.on('error', () => {});
       req.write(content.subarray(0, 512));
 
       await setTimeout(50);
@@ -219,6 +220,43 @@ describe('/upload', () => {
       const downloaded = await utils.downloadAsset(user.accessToken, body.id);
       expect(downloaded.size).toBe(content.byteLength);
       expect(content.compare(await downloaded.bytes())).toBe(0);
+    });
+
+    it('should keep serving other requests while many uploads are stalled', async () => {
+      const stalled = Array.from({ length: 15 }, (_, index) => {
+        const content = randomBytes(100_000);
+        const req = httpRequest({
+          hostname: 'localhost',
+          port: 2285,
+          path: '/api/upload',
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${user.accessToken}`,
+            'X-Immich-Asset-Data': makeAssetData({ filename: `stalled-${index}.jpg` }),
+            'Repr-Digest': `sha=:${createHash('sha1').update(content).digest('base64')}:`,
+            'Upload-Draft-Interop-Version': '8',
+            'Upload-Complete': '?0',
+            'Upload-Length': content.byteLength.toString(),
+            'Content-Length': content.byteLength.toString(),
+          },
+        });
+        req.on('error', () => {});
+        req.write(content.subarray(0, 1000));
+        return req;
+      });
+
+      try {
+        await setTimeout(500);
+        const { status } = await request(app)
+          .get('/users/me')
+          .set('Authorization', `Bearer ${user.accessToken}`)
+          .timeout(5000);
+        expect(status).toBe(200);
+      } finally {
+        for (const req of stalled) {
+          req.destroy();
+        }
+      }
     });
 
     it('should reject when Upload-Complete: ?1 with mismatching Content-Length and Upload-Length', async () => {

@@ -50,8 +50,7 @@ export class AssetUploadController {
 - live-photo-video-id (string, optional): Live photo ID for assets from iOS devices
 - icloud-id (string, optional): iCloud identifier for assets from iOS devices`,
     required: true,
-    example:
-      'filename="photo.jpg", file-created-at="2024-01-01T00:00:00Z", file-modified-at="2024-01-01T00:00:00Z"',
+    example: 'filename="photo.jpg", file-created-at="2024-01-01T00:00:00Z", file-modified-at="2024-01-01T00:00:00Z"',
   })
   @ApiHeader({
     name: Header.ReprDigest,
