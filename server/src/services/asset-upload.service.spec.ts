@@ -357,6 +357,45 @@ describe(AssetUploadService.name, () => {
     });
   });
 
+  describe('access', () => {
+    const resumeDto = { contentLength: 10, version: 8, uploadOffset: 0, uploadComplete: false } as any;
+
+    it('should reject an upload from a shared link that does not allow uploads', async () => {
+      const auth = factory.auth({ sharedLink: { allowUpload: false } });
+
+      await expect(sut.startUpload(auth, {} as any, res() as any, {} as any)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(mocks.asset.createWithMetadata).not.toHaveBeenCalled();
+    });
+
+    it('should reject resuming from a shared link that does not allow uploads', async () => {
+      const auth = factory.auth({ sharedLink: { allowUpload: false } });
+
+      await expect(sut.resumeUpload(auth, {} as any, res() as any, factory.uuid(), resumeDto)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(mocks.asset.getCompletionMetadata).not.toHaveBeenCalled();
+    });
+
+    it("should answer 404 without aborting the owner's request when another user touches an upload", async () => {
+      const id = factory.uuid();
+      const ownerRequest = { destroy: vi.fn(), on: vi.fn() };
+      (sut as any).activeRequests.set(id, { req: ownerRequest, startTime: new Date(0), settled: Promise.resolve() });
+      mocks.asset.getCompletionMetadata.mockResolvedValue(undefined);
+      const response = res();
+
+      await sut.getUploadStatus(factory.auth(), response as any, id, { version: 8 });
+      await sut.cancelUpload(factory.auth(), id, response as any);
+      await sut.resumeUpload(factory.auth(), {} as any, response as any, id, resumeDto);
+
+      expect(response.status).toHaveBeenCalledWith(404);
+      expect(response.status).toHaveBeenCalledTimes(3);
+      expect(ownerRequest.destroy).not.toHaveBeenCalled();
+      expect(mocks.websocket.serverSend).not.toHaveBeenCalled();
+    });
+  });
+
   describe('getUploadOptions', () => {
     it('should advertise a 90 MiB max-append-size by default', async () => {
       mocks.systemMetadata.get.mockResolvedValue({});

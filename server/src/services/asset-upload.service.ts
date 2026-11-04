@@ -28,6 +28,7 @@ import {
   ImmichWorker,
   JobName,
   JobStatus,
+  Permission,
   QueueName,
   StorageFolder,
 } from 'src/enum.js';
@@ -67,6 +68,7 @@ export class AssetUploadService extends BaseService {
 
   async startUpload(auth: AuthDto, req: Readable, res: Response, dto: StartUploadDto): Promise<void> {
     this.logger.verboseFn(() => `Starting upload: ${JSON.stringify(dto)}`);
+    await this.requireUploadAccess(auth);
     const { uploadComplete, assetData, uploadLength, contentLength, version } = dto;
     const isComplete = uploadComplete !== false;
     const isResumable = version && uploadComplete !== undefined;
@@ -146,6 +148,9 @@ export class AssetUploadService extends BaseService {
   async resumeUpload(auth: AuthDto, req: Readable, res: Response, id: string, dto: ResumeUploadDto): Promise<void> {
     this.logger.verboseFn(() => `Resuming upload for ${id}: ${JSON.stringify(dto)}`);
     const { uploadComplete, uploadLength, uploadOffset, contentLength, version } = dto;
+    if (!(await this.requireUploadOwner(auth, id, res))) {
+      return;
+    }
     this.setCompleteHeader(res, version, false);
     const { backup } = await this.getConfig({ withCache: true });
     if (this.exceedsAppendLimit(contentLength, backup)) {
@@ -213,6 +218,9 @@ export class AssetUploadService extends BaseService {
   }
 
   async cancelUpload(auth: AuthDto, assetId: string, res: Response): Promise<void> {
+    if (!(await this.requireUploadOwner(auth, assetId, res))) {
+      return;
+    }
     await this.settleExistingRequest(assetId);
     const claimed = await this.whileClaimed(assetId, undefined, async () => {
       const asset = await this.assetRepository.getCompletionMetadata(assetId, auth.user.id);
@@ -233,6 +241,9 @@ export class AssetUploadService extends BaseService {
 
   async getUploadStatus(auth: AuthDto, res: Response, id: string, { version }: GetUploadStatusDto): Promise<void> {
     this.logger.verboseFn(() => `Getting upload status for ${id} with version ${version}`);
+    if (!(await this.requireUploadOwner(auth, id, res))) {
+      return;
+    }
     const { backup } = await this.getConfig({ withCache: true });
     await this.settleExistingRequest(id);
     const asset = await this.assetRepository.getCompletionMetadata(id, auth.user.id);
@@ -407,6 +418,19 @@ export class AssetUploadService extends BaseService {
     this.logger.log('Cancelling upload for asset', assetId);
     await withRetry(() => this.storageRepository.unlink(path));
     await withRetry(() => this.assetRepository.removeAndDecrementQuota(assetId));
+  }
+
+  private requireUploadAccess(auth: AuthDto) {
+    return this.requireAccess({ auth, permission: Permission.AssetUpload, ids: [auth.user.id] });
+  }
+
+  private async requireUploadOwner(auth: AuthDto, id: string, res: Response): Promise<boolean> {
+    await this.requireUploadAccess(auth);
+    if (await this.assetRepository.getCompletionMetadata(id, auth.user.id)) {
+      return true;
+    }
+    res.status(404).send('Asset not found');
+    return false;
   }
 
   private async finishUpload(auth: AuthDto, res: Response, { id, path, expected, fileModifiedAt }: Received) {
