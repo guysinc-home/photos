@@ -508,31 +508,55 @@ export class AssetRepository {
 
   @GenerateSql({ params: [DummyValue.UUID, { albumId: DummyValue.UUID, id: DummyValue.UUID }] })
   setComplete(assetId: string, sharedLink?: { albumId?: string | null; id: string }) {
-    const completedAsset = this.db
-      .updateTable('asset as complete_asset')
-      .set((eb) => ({
-        status: sql.lit(AssetStatus.Active),
-        visibility: eb
-          .case()
-          .when(
-            eb.and([
-              eb('complete_asset.type', '=', sql.lit(AssetType.Video)),
-              eb.exists(eb.selectFrom('asset').whereRef('complete_asset.id', '=', 'asset.livePhotoVideoId')),
-            ]),
-          )
-          .then(sql<AssetVisibility>`'hidden'::asset_visibility_enum`)
-          .else(sql<AssetVisibility>`'timeline'::asset_visibility_enum`)
-          .end(),
-      }))
-      .where('id', '=', assetId)
-      .where('status', '=', sql.lit(AssetStatus.Partial))
-      .returningAll();
+    const completed = this.db
+      .with('completed_asset', (qb) =>
+        qb
+          .updateTable('asset as complete_asset')
+          .set((eb) => ({
+            status: sql.lit(AssetStatus.Active),
+            visibility: eb
+              .case()
+              .when(
+                eb.and([
+                  eb('complete_asset.type', '=', sql.lit(AssetType.Video)),
+                  eb.exists(eb.selectFrom('asset').whereRef('complete_asset.id', '=', 'asset.livePhotoVideoId')),
+                ]),
+              )
+              .then(sql<AssetVisibility>`'hidden'::asset_visibility_enum`)
+              .else(sql<AssetVisibility>`'timeline'::asset_visibility_enum`)
+              .end(),
+          }))
+          .where('id', '=', assetId)
+          .where('status', '=', sql.lit(AssetStatus.Partial))
+          .returningAll(),
+      )
+      .with('resynced_exif', (qb) =>
+        qb
+          .updateTable('asset_exif')
+          .set({ updatedAt: sql`clock_timestamp()` })
+          .where('assetId', 'in', (eb) => eb.selectFrom('completed_asset').select('completed_asset.id'))
+          .returning('asset_exif.assetId'),
+      )
+      .with('resynced_metadata', (qb) =>
+        qb
+          .updateTable('asset_metadata')
+          .set({ updatedAt: sql`clock_timestamp()` })
+          .where('assetId', 'in', (eb) => eb.selectFrom('completed_asset').select('completed_asset.id'))
+          .returning('asset_metadata.assetId'),
+      )
+      .with('resynced_album_asset', (qb) =>
+        qb
+          .updateTable('album_asset')
+          .set({ updatedAt: sql`clock_timestamp()` })
+          .where('assetId', 'in', (eb) => eb.selectFrom('completed_asset').select('completed_asset.id'))
+          .returning('album_asset.assetId'),
+      );
+
     if (!sharedLink) {
-      return completedAsset.executeTakeFirst();
+      return completed.selectFrom('completed_asset').selectAll().executeTakeFirst();
     }
 
-    return this.db
-      .with('completed_asset', () => completedAsset)
+    return completed
       .with('shared_link', (qb) =>
         sharedLink?.albumId
           ? qb

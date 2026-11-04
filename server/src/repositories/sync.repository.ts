@@ -4,7 +4,7 @@ import { InjectKysely } from 'nestjs-kysely';
 import type { SyncAck } from 'src/types.js';
 import { columns } from 'src/database.js';
 import { DummyValue, GenerateSql } from 'src/decorators.js';
-import { MemoryType } from 'src/enum.js';
+import { AssetStatus, MemoryType } from 'src/enum.js';
 import { DB } from 'src/schema/index.js';
 
 export type SyncBackfillOptions = {
@@ -214,6 +214,7 @@ class AlbumAssetSync extends BaseSync {
       )
       .select('album_asset.updateId')
       .where('album_asset.albumId', '=', albumId)
+      .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
       .stream();
   }
 
@@ -234,6 +235,7 @@ class AlbumAssetSync extends BaseSync {
       )
       .select('asset.updateId')
       .where('album_asset.updateId', '<=', albumToAssetAck.updateId) // Ensure we only send updates for assets that the client already knows about
+      .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
       .innerJoin('album_user', 'album_user.albumId', 'album_asset.albumId')
       .where('album_user.userId', '=', userId)
       .stream();
@@ -255,6 +257,7 @@ class AlbumAssetSync extends BaseSync {
           .end()
           .as('isFavorite'),
       )
+      .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
       .innerJoin('album_user', 'album_user.albumId', 'album_asset.albumId')
       .where('album_user.userId', '=', userId)
       .stream();
@@ -266,9 +269,11 @@ class AlbumAssetExifSync extends BaseSync {
   getBackfill(options: SyncBackfillOptions, albumId: string) {
     return this.backfillQuery('album_asset', options)
       .innerJoin('asset_exif', 'asset_exif.assetId', 'album_asset.assetId')
+      .innerJoin('asset', 'asset.id', 'album_asset.assetId')
       .select(columns.syncAssetExif)
       .select('album_asset.updateId')
       .where('album_asset.albumId', '=', albumId)
+      .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
       .stream();
   }
 
@@ -277,8 +282,10 @@ class AlbumAssetExifSync extends BaseSync {
     const userId = options.userId;
     return this.upsertQuery('asset_exif', options)
       .innerJoin('album_asset', 'album_asset.assetId', 'asset_exif.assetId')
+      .innerJoin('asset', 'asset.id', 'asset_exif.assetId')
       .select(columns.syncAssetExif)
       .select('asset_exif.updateId')
+      .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
       .where('album_asset.updateId', '<=', albumToAssetAck.updateId) // Ensure we only send exif updates for assets that the client already knows about
       .innerJoin('album_user', 'album_user.albumId', 'album_asset.albumId')
       .where('album_user.userId', '=', userId)
@@ -291,7 +298,9 @@ class AlbumAssetExifSync extends BaseSync {
     return this.upsertQuery('album_asset', options)
       .select('album_asset.updateId')
       .innerJoin('asset_exif', 'asset_exif.assetId', 'album_asset.assetId')
+      .innerJoin('asset', 'asset.id', 'album_asset.assetId')
       .select(columns.syncAssetExif)
+      .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
       .innerJoin('album', 'album.id', 'album_asset.albumId')
       .leftJoin('album_user', 'album_user.albumId', 'album_asset.albumId')
       .where('album_user.userId', '=', userId)
@@ -303,8 +312,10 @@ class AlbumToAssetSync extends BaseSync {
   @GenerateSql({ params: [dummyBackfillOptions, DummyValue.UUID], stream: true })
   getBackfill(options: SyncBackfillOptions, albumId: string) {
     return this.backfillQuery('album_asset', options)
+      .innerJoin('asset', 'asset.id', 'album_asset.assetId')
       .select(['album_asset.assetId as assetId', 'album_asset.albumId as albumId', 'album_asset.updateId'])
       .where('album_asset.albumId', '=', albumId)
+      .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
       .stream();
   }
 
@@ -331,7 +342,9 @@ class AlbumToAssetSync extends BaseSync {
   getUpserts(options: SyncQueryOptions) {
     const userId = options.userId;
     return this.upsertQuery('album_asset', options)
+      .innerJoin('asset', 'asset.id', 'album_asset.assetId')
       .select(['album_asset.assetId as assetId', 'album_asset.albumId as albumId', 'album_asset.updateId'])
+      .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
       .innerJoin('album_user', 'album_user.albumId', 'album_asset.albumId')
       .where('album_user.userId', '=', userId)
       .stream();
@@ -406,6 +419,7 @@ class AssetSync extends BaseSync {
       .select(columns.syncAsset)
       .select('asset.updateId')
       .where('ownerId', '=', options.userId)
+      .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
       .stream();
   }
 }
@@ -519,7 +533,13 @@ class AssetExifSync extends BaseSync {
     return this.upsertQuery('asset_exif', options)
       .select(columns.syncAssetExif)
       .select('asset_exif.updateId')
-      .where('assetId', 'in', (eb) => eb.selectFrom('asset').select('id').where('ownerId', '=', options.userId))
+      .where('assetId', 'in', (eb) =>
+        eb
+          .selectFrom('asset')
+          .select('id')
+          .where('ownerId', '=', options.userId)
+          .where('asset.status', '!=', sql.lit(AssetStatus.Partial)),
+      )
       .stream();
   }
 }
@@ -666,6 +686,7 @@ class PartnerAssetsSync extends BaseSync {
       .select(sql.val(false).as('isFavorite'))
       .select('asset.updateId')
       .where('ownerId', '=', partnerId)
+      .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
       .stream();
   }
 
@@ -688,6 +709,7 @@ class PartnerAssetsSync extends BaseSync {
       .where('ownerId', 'in', (eb) =>
         eb.selectFrom('partner').select(['sharedById']).where('sharedWithId', '=', options.userId),
       )
+      .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
       .stream();
   }
 }
@@ -700,6 +722,7 @@ class PartnerAssetExifsSync extends BaseSync {
       .select('asset_exif.updateId')
       .innerJoin('asset', 'asset.id', 'asset_exif.assetId')
       .where('asset.ownerId', '=', partnerId)
+      .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
       .stream();
   }
 
@@ -714,7 +737,8 @@ class PartnerAssetExifsSync extends BaseSync {
           .select('id')
           .where('ownerId', 'in', (eb) =>
             eb.selectFrom('partner').select(['sharedById']).where('sharedWithId', '=', options.userId),
-          ),
+          )
+          .where('asset.status', '!=', sql.lit(AssetStatus.Partial)),
       )
       .stream();
   }
@@ -833,6 +857,7 @@ class AssetMetadataSync extends BaseSync {
       .select(['assetId', 'key', 'value', 'asset_metadata.updateId'])
       .innerJoin('asset', 'asset.id', 'asset_metadata.assetId')
       .where('asset.ownerId', '=', userId)
+      .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
       .stream();
   }
 }
