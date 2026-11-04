@@ -1,8 +1,8 @@
 import { createZodDto } from 'nestjs-zod';
-import { ImmichHeader } from 'src/enum.js';
-import { isoDatetimeToDate } from 'src/validation.js';
 import { parseDictionary } from 'structured-headers';
 import z from 'zod';
+import { ImmichHeader } from 'src/enum.js';
+import { isoDatetimeToDate } from 'src/validation.js';
 
 export enum Header {
   ContentLength = 'content-length',
@@ -184,8 +184,10 @@ function parseUploadComplete(
   if (incomplete !== undefined) {
     return !incomplete;
   }
-  if (required && headers[Header.UploadComplete] === undefined && headers[Header.UploadIncomplete] === undefined) {
-    ctx.addIssue({ code: 'custom', path: [Header.UploadComplete], message: 'is required' });
-    return z.NEVER;
+  if (!required || headers[Header.UploadComplete] !== undefined || headers[Header.UploadIncomplete] !== undefined) {
+    return;
   }
+
+  ctx.addIssue({ code: 'custom', path: [Header.UploadComplete], message: 'is required' });
+  return z.NEVER;
 }

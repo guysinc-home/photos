@@ -4,7 +4,7 @@ import { AssetUploadService } from 'src/services/asset-upload.service.js';
 import { ASSET_CHECKSUM_CONSTRAINT } from 'src/utils/database.js';
 import { authStub } from 'test/fixtures/auth.stub.js';
 import { factory } from 'test/small.factory.js';
-import { newTestService, ServiceMocks } from 'test/utils.js';
+import { ServiceMocks, newTestService } from 'test/utils.js';
 
 describe(AssetUploadService.name, () => {
   let sut: AssetUploadService;
@@ -162,7 +162,7 @@ describe(AssetUploadService.name, () => {
       (checksumError as any).constraint_name = ASSET_CHECKSUM_CONSTRAINT;
 
       mocks.asset.createWithMetadata.mockRejectedValue(checksumError);
-      // eslint-disable-next-line unicorn/no-useless-undefined
+
       mocks.asset.getUploadAssetIdByChecksum.mockResolvedValue(undefined);
 
       await expect(sut.onStart(authStub.user1, mockDto)).rejects.toThrow(InternalServerErrorException);
@@ -351,7 +351,6 @@ describe(AssetUploadService.name, () => {
     const path = `/upload/${assetId}/file.jpg`;
 
     it('should skip if asset not found', async () => {
-      // eslint-disable-next-line unicorn/no-useless-undefined
       mocks.assetJob.getForPartialAssetCleanupJob.mockResolvedValue(undefined);
 
       const result = await sut.removeStaleUpload({ id: assetId });

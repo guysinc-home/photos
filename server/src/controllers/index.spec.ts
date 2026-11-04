@@ -46,6 +46,7 @@ const ADMIN_ROUTES = new Set([
 /** Routes a shared link (`?key=`) is allowed to reach, i.e. `@Authenticated({ sharedLink: true })` */
 const SHARED_LINK_ROUTES = new Set([
   'DELETE assets/:id/video/stream/:sessionId',
+  'DELETE upload/:id',
   'GET albums/:id',
   'GET albums/:id/map-markers',
   'GET assets/:id',
@@ -58,11 +59,14 @@ const SHARED_LINK_ROUTES = new Set([
   'GET shared-links/me',
   'GET timeline/bucket',
   'GET timeline/buckets',
+  'HEAD upload/:id',
+  'PATCH upload/:id',
   'POST assets',
   'POST download/archive',
   'POST download/info',
   'POST search/metadata',
   'POST shared-links/login',
+  'POST upload',
 ]);
 
 const isAdminPermission = (permission: AuthenticatedOptions['permission']) =>

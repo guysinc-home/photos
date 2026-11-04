@@ -1,16 +1,18 @@
 import { BadRequestException, Injectable, InternalServerErrorException } from '@nestjs/common';
-import type { Response } from 'express';
 import { DateTime } from 'luxon';
 import { createHash } from 'node:crypto';
 import { dirname, extname, join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
-import { SystemConfig } from 'src/dtos/config.dto.js';
+import type { Response } from 'express';
+import type { ArgOf } from 'src/repositories/event.repository.js';
+import type { JobItem, JobOf } from 'src/types.js';
 import { JOBS_ASSET_PAGINATION_SIZE } from 'src/constants.js';
 import { StorageCore } from 'src/cores/storage.core.js';
 import { AuthSharedLink } from 'src/database.js';
 import { OnEvent, OnJob } from 'src/decorators.js';
 import { GetUploadStatusDto, ResumeUploadDto, StartUploadDto } from 'src/dtos/asset-upload.dto.js';
 import { AuthDto } from 'src/dtos/auth.dto.js';
+import { SystemConfig } from 'src/dtos/config.dto.js';
 import {
   AssetMetadataKey,
   AssetStatus,
@@ -23,9 +25,7 @@ import {
   QueueName,
   StorageFolder,
 } from 'src/enum.js';
-import type { ArgOf } from 'src/repositories/event.repository.js';
 import { BaseService } from 'src/services/base.service.js';
-import type { JobItem, JobOf } from 'src/types.js';
 import { isAssetChecksumConstraint } from 'src/utils/database.js';
 import { mimeTypes } from 'src/utils/mime-types.js';
 import { withRetry } from 'src/utils/misc.js';
@@ -240,10 +240,12 @@ export class AssetUploadService extends BaseService {
     const assets = this.assetJobRepository.streamForPartialAssetCleanupJob(createdBefore);
     for await (const asset of assets) {
       jobs.push({ name: JobName.PartialAssetCleanup, data: asset });
-      if (jobs.length >= JOBS_ASSET_PAGINATION_SIZE) {
-        await this.jobRepository.queueAll(jobs);
-        jobs = [];
+      if (jobs.length < JOBS_ASSET_PAGINATION_SIZE) {
+        continue;
       }
+
+      await this.jobRepository.queueAll(jobs);
+      jobs = [];
     }
     await this.jobRepository.queueAll(jobs);
   }
@@ -373,10 +375,12 @@ export class AssetUploadService extends BaseService {
     let receivedLength = 0;
     req.on('data', (data: Buffer) => {
       receivedLength += data.length;
-      if (!writeStream.write(data)) {
-        req.pause();
-        writeStream.once('drain', () => req.resume());
+      if (writeStream.write(data)) {
+        return;
       }
+
+      req.pause();
+      writeStream.once('drain', () => req.resume());
     });
 
     req.on('close', () => {

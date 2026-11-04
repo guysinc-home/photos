@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { AssetUploadController } from 'src/controllers/asset-upload.controller.js';
-import { AssetUploadService } from 'src/services/asset-upload.service.js';
 import { serializeDictionary } from 'structured-headers';
 import request from 'supertest';
+import { AssetUploadController } from 'src/controllers/asset-upload.controller.js';
+import { AssetUploadService } from 'src/services/asset-upload.service.js';
 import { factory } from 'test/small.factory.js';
 import { ControllerContext, controllerSetup, mockBaseService } from 'test/utils.js';
 
-const makeAssetData = (overrides?: Partial<any>): string => {
+const makeAssetData = (): string => {
   return serializeDictionary({
     filename: 'test-image.jpg',
     'device-asset-id': 'test-asset-id',
@@ -14,7 +14,6 @@ const makeAssetData = (overrides?: Partial<any>): string => {
     'file-created-at': new Date('2025-01-02T00:00:00Z').toISOString(),
     'file-modified-at': new Date('2025-01-01T00:00:00Z').toISOString(),
     'is-favorite': false,
-    ...overrides,
   });
 };
 
