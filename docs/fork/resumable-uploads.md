@@ -30,27 +30,39 @@ Not published on the docs site. Background and plan: `docs/research/chunked-uplo
 
 Errors:
 
-- `409`: wrong offset. `Upload-Offset` gives the right one.
-- `400`: the upload is already complete, the lengths are inconsistent, or the quota would be exceeded. Quota is reserved from `Upload-Length` when the upload starts.
+- `400` with the `inconsistent-upload-length` problem type: a body longer than `Upload-Length`, an append past it, a completion that doesn't land exactly on it, or a file on disk of a different size at completion (the upload is then deleted).
+- `400` with `completed-upload`: the upload is already finished.
+- `400` "Quota has been exceeded!": quota is reserved from `Upload-Length` when the upload starts.
+- `404`: unknown upload, past its `max-age`, or created with other credentials (see below).
+- `409`: wrong offset; `Upload-Offset` gives the right one. Also returned when a shared link starts a file another client is already uploading; no `Location` is given.
+- `413` with `Upload-Limit`: the request body is larger than `max-append-size`.
+- `429`: the user already has `maxPartialUploads` unfinished uploads.
 - `460`: the SHA‑1 doesn't match; the upload is deleted.
-- `500` on `POST`: a resumable client re-sent a file that has an unfinished upload. Use `HEAD` and resume.
-- `404`: the upload is unknown or belongs to someone else.
+- `500` on `POST`: the same client re-sent a file it is still uploading. Use `HEAD` and resume.
+- `503` with `Retry-After`: another request is still writing to this upload.
 
-Auth: a session, an API key with `asset.upload`, or a shared link with uploads allowed.
+Auth: a session, an API key with `asset.upload`, or a shared link with uploads allowed. Each upload is tied to whatever created it:
+
+- Only that session, API key or shared link can `HEAD`, `PATCH` or `DELETE` it.
+- A shared link never sees the owner's uploads or other links' uploads.
+- If the owner starts the same file with other credentials (a new login, say), the old upload is replaced.
 
 ## Settings
 
-| Key                                | Default             | Effect                                                                                                                                                                      |
-| ---------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `backup.upload.maxAppendSizeBytes` | `94371840` (90 MiB) | Sent as `max-append-size` in `Upload-Limit`. `0` sends none. Advertised only, not enforced, because the proxy enforces the real cap. Keep it below your proxy's body limit. |
-| `backup.upload.maxAgeHours`        | `72`                | Unfinished uploads older than this are cleaned up. Also sent as `max-age`.                                                                                                  |
-| `nightlyTasks.removeStaleUploads`  | `true`              | Runs that cleanup nightly: a complete, valid file is kept; anything else is deleted and its quota returned.                                                                 |
+| Key                                | Default             | Effect                                                                                                                                                                                                                                             |
+| ---------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `backup.upload.maxAppendSizeBytes` | `94371840` (90 MiB) | Largest request body. Sent as `max-append-size` in `Upload-Limit`, and larger bodies get `413`. `0` means no limit. Keep it below your proxy's body limit, and set `0` for clients that send whole files in one request, such as iOS's URLSession. |
+| `backup.upload.maxAgeHours`        | `72`                | An unfinished upload expires this long after it started. `max-age` in `Upload-Limit` counts down to that moment.                                                                                                                                   |
+| `backup.upload.maxPartialUploads`  | `20`                | Unexpired unfinished uploads one user may have at once. `0` means no limit.                                                                                                                                                                        |
+| `nightlyTasks.removeStaleUploads`  | `true`              | Runs the cleanup nightly: an expired upload whose file is complete and valid is kept, anything else is deleted and its quota returned.                                                                                                             |
 
-Set these through `PUT /api/system-config` or the config file. The web admin page has no fields for them.
+Set these through `PUT /api/system-config` or the config file. The web admin page has no fields for them. To run the cleanup now: `POST /api/jobs` with `{"name": "upload-cleanup"}`.
 
 ## Behaviour to know
 
 - Unfinished uploads are `partial` assets. They have `hidden` visibility, so they stay out of the timeline and default search. Sync, background jobs, `bulk-upload-check` and the `x-immich-checksum` pre-check filter them out by status.
 - A stock `POST /api/assets` of the same file replaces a `partial` asset.
-- Rolling back the migration deletes `partial` rows and leaves their files in `upload/`, where the integrity check reports them as untracked.
+- Generic asset routes (`/api/assets/...`) don't see unfinished uploads, so they can't be trashed, restored, edited or downloaded by id.
+- Requests writing to one upload exclude each other, and the cleanup job, cancel and stock replacement, through a claim on the upload's `asset_upload` row. A writer that stops refreshing it for 30 seconds loses it.
+- Migrations: `1793825597040-AddPartialAssetStatus` and `1793826084186-AddAssetUploadTable`. Both are reversible; to go back to a stock image, follow [rollback-to-stock.md](rollback-to-stock.md).
 - Server image: `ghcr.io/guysinc-home/immich-server`, built by `.github/workflows/fork-server-image.yml` on tags like `v3.4.0-photos.1`.

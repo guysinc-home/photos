@@ -14,26 +14,26 @@ Ship the server half of chunked, resumable uploads from `docs/research/chunked-u
 
 ## What changed
 
-- **#2**: immich-app/immich#22385 (head `41dd5fa2`) cherry-picked onto `main` with mertalev's authorship. The 4 predicted conflicts were resolved, plus one adapt commit for newer route-guard and lint rules.
-- **#3**: the report's three fixes:
-  - optional device fields;
-  - `partial` filtered from 15 sync queries, with completion bumping exif, metadata and album rows;
-  - writes at their offset, so the advisory lock no longer spans an upload: 12 stalled uploads used to hang `/users/me`, and 40 now don't.
-  - Also a reversible migration, and an upstream bug where a conventional retry kept the truncated partial file.
-- **#4**: `backup.upload.maxAppendSizeBytes` (90 MiB), advertised as `max-append-size`.
-- **#5**: e2e and medium tests, which found two more bugs:
-  - shared links without upload rights could upload;
-  - partial uploads looked like duplicates to stock clients.
-- **#6**: tag-only ghcr workflow using allowed actions only (not run).
-- **#7**: `docs/fork/resumable-uploads.md` and this record.
+- **#2**: immich-app/immich#22385 (head `41dd5fa2`) cherry-picked with mertalev's authorship, plus an adapt commit. Review: migration renamed after main's newest, with a test on ORDER.
+- **#3**: optional device fields; `partial` kept out of sync; positional writes so uploads don't pin connections; a reversible migration; a truncated-retry bug fixed. Review:
+  - `withUuidLock` deadlock fixed;
+  - declared length enforced;
+  - an `asset_upload` claim so appends, cancel and cleanup can't unlink a file mid-write;
+  - retries truncate and hash the whole file.
+- **#4**: `max-append-size` advertised. Review: it's now enforced (413), the sweep is scheduled plus an `upload-cleanup` job, `max-age` counts down, and a cap of 20 open uploads per user.
+- **#5**: tests, plus two bugs they found (shared-link upload rights, partials as duplicates). Review:
+  - uploads tied to their creating session, key or link;
+  - the stock replacement takes the claim;
+  - partials hidden from generic asset routes.
+- **#6**: tag-only ghcr workflow (not run).
+- **#7**: endpoint note, rollback runbook, this record.
 
 ## Rejected in session
 
-- A Redis lease for exclusivity: a new repository for little gain over positional writes.
-- Enforcing `max-append-size`: it would break URLSession, which sends whole files.
-- Rejecting append beyond stored length when `Upload-Length` is absent: a protocol change upstream didn't make.
-- Touching upstream's e2e spec beyond the broken `/upload` path: the new tests live in their own file.
+- A Redis lease: the `asset_upload` row gives the same exclusivity without a new repository.
+- Answering HEAD only for partial uploads: RUFH clients HEAD a finished upload to learn it completed, and upstream tests that. Shared links get 404 instead.
+- Strict caps under concurrency: the per-user cap can overshoot by the requests in flight.
 
 ## Next
 
-A human should raise the conventional-retry bug, the shared-link permission gap and the sync leak upstream; the #22385 thread is locked and `AGENTS.md` forbids LLM-written upstream comments. Then run the stack's CI somewhere it can run. The fork has no Actions workflows registered.
+A human should raise the upstream bugs found here (conventional retry, shared-link permissions, sync leak, unscheduled sweep, unenforced length); the #22385 thread is locked and `AGENTS.md` forbids LLM-written upstream comments. Upstream's workflows can't start on this fork (org allow-list and secrets), so the stack has no CI yet.
