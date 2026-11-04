@@ -253,3 +253,18 @@ export const claimPartialUpload = async (
   }
   return true;
 };
+
+type UploadCreator = { sessionId: string | null; apiKeyId: string | null; sharedLinkId: string | null };
+
+export const isUploadCreator = (auth: AuthDto, creator: UploadCreator) => {
+  if (creator.sharedLinkId || auth.sharedLink) {
+    return creator.sharedLinkId === auth.sharedLink?.id;
+  }
+  if (creator.apiKeyId || auth.apiKey) {
+    return creator.apiKeyId === auth.apiKey?.id;
+  }
+  if (creator.sessionId) {
+    return creator.sessionId === auth.session?.id;
+  }
+  return true;
+};

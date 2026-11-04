@@ -550,6 +550,17 @@ export class AssetRepository {
     return !!claimed;
   }
 
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })
+  getUploadCreator(assetId: string, ownerId: string) {
+    return this.db
+      .selectFrom('asset')
+      .leftJoin('asset_upload', 'asset_upload.assetId', 'asset.id')
+      .select(['asset.status', 'asset_upload.sessionId', 'asset_upload.apiKeyId', 'asset_upload.sharedLinkId'])
+      .where('asset.id', '=', assetId)
+      .where('asset.ownerId', '=', ownerId)
+      .executeTakeFirst();
+  }
+
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.DATE] })
   async countPartialUploads(ownerId: string, createdAfter: Date): Promise<number> {
     const { count } = await this.db

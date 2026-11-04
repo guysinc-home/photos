@@ -33,7 +33,7 @@ import {
   StorageFolder,
 } from 'src/enum.js';
 import { BaseService } from 'src/services/base.service.js';
-import { UPLOAD_CLAIM_WAIT_MS, claimPartialUpload } from 'src/utils/asset.util.js';
+import { UPLOAD_CLAIM_WAIT_MS, claimPartialUpload, isUploadCreator } from 'src/utils/asset.util.js';
 import { isAssetChecksumConstraint } from 'src/utils/database.js';
 import { mimeTypes } from 'src/utils/mime-types.js';
 import { withRetry } from 'src/utils/misc.js';
@@ -81,9 +81,17 @@ export class AssetUploadService extends BaseService {
     }
 
     let started = await this.onStart(auth, dto);
-    if (started.isDuplicate && started.status === AssetStatus.Partial && this.isExpired(started.createdAt, backup)) {
-      await this.removeExpiredUpload(started.id);
-      started = await this.onStart(auth, dto);
+    if (started.isDuplicate && started.status === AssetStatus.Partial) {
+      const creator = await this.assetRepository.getUploadCreator(started.id, auth.user.id);
+      const isOwnUpload = !creator || isUploadCreator(auth, creator);
+      if (!isOwnUpload && auth.sharedLink) {
+        res.status(409).send('This file is already being uploaded');
+        return;
+      }
+      if (!isOwnUpload || this.isExpired(started.createdAt, backup)) {
+        await this.removePartialUpload(started.id);
+        started = await this.onStart(auth, dto);
+      }
     }
     const { id, path, status, isDuplicate } = started;
     const location = `/api/upload/${id}`;
@@ -148,10 +156,10 @@ export class AssetUploadService extends BaseService {
   async resumeUpload(auth: AuthDto, req: Readable, res: Response, id: string, dto: ResumeUploadDto): Promise<void> {
     this.logger.verboseFn(() => `Resuming upload for ${id}: ${JSON.stringify(dto)}`);
     const { uploadComplete, uploadLength, uploadOffset, contentLength, version } = dto;
+    this.setCompleteHeader(res, version, false);
     if (!(await this.requireUploadOwner(auth, id, res))) {
       return;
     }
-    this.setCompleteHeader(res, version, false);
     const { backup } = await this.getConfig({ withCache: true });
     if (this.exceedsAppendLimit(contentLength, backup)) {
       return this.sendAppendTooLarge(res, backup);
@@ -426,7 +434,10 @@ export class AssetUploadService extends BaseService {
 
   private async requireUploadOwner(auth: AuthDto, id: string, res: Response): Promise<boolean> {
     await this.requireUploadAccess(auth);
-    if (await this.assetRepository.getCompletionMetadata(id, auth.user.id)) {
+    const creator = await this.assetRepository.getUploadCreator(id, auth.user.id);
+    const isPartial = creator?.status === AssetStatus.Partial;
+    const allowed = isPartial ? isUploadCreator(auth, creator) : !!creator && !auth.sharedLink;
+    if (allowed) {
       return true;
     }
     res.status(404).send('Asset not found');
@@ -612,7 +623,7 @@ export class AssetUploadService extends BaseService {
     }
   }
 
-  private async removeExpiredUpload(id: string) {
+  private async removePartialUpload(id: string) {
     await this.whileClaimed(id, undefined, async () => {
       const asset = await this.assetJobRepository.getForPartialAssetCleanupJob(id);
       if (asset) {

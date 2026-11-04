@@ -31,6 +31,12 @@ describe(AssetUploadService.name, () => {
     mocks.asset.releaseUploadClaim.mockResolvedValue();
     mocks.asset.getUploadAssetIdByChecksum.mockResolvedValue(undefined);
     mocks.asset.countPartialUploads.mockResolvedValue(0);
+    mocks.asset.getUploadCreator.mockResolvedValue({
+      status: AssetStatus.Partial,
+      sessionId: null,
+      apiKeyId: null,
+      sharedLinkId: null,
+    });
   });
 
   describe('onStart', () => {
@@ -378,10 +384,103 @@ describe(AssetUploadService.name, () => {
       expect(mocks.asset.getCompletionMetadata).not.toHaveBeenCalled();
     });
 
+    it('should only let the shared link that created an upload see or change it', async () => {
+      const id = factory.uuid();
+      const creator = factory.auth({ sharedLink: { allowUpload: true } });
+      const otherLink = factory.auth({ sharedLink: { allowUpload: true } });
+      mocks.asset.getUploadCreator.mockResolvedValue({
+        status: AssetStatus.Partial,
+        sessionId: null,
+        apiKeyId: null,
+        sharedLinkId: creator.sharedLink!.id,
+      });
+      mocks.asset.getCompletionMetadata.mockResolvedValue(undefined);
+
+      const fromOtherLink = res();
+      await sut.cancelUpload(otherLink, id, fromOtherLink as any);
+      expect(fromOtherLink.status).toHaveBeenCalledWith(404);
+      expect(mocks.asset.claimUpload).not.toHaveBeenCalled();
+
+      const fromOwnerSession = res();
+      await sut.cancelUpload(factory.auth(), id, fromOwnerSession as any);
+      expect(fromOwnerSession.status).toHaveBeenCalledWith(404);
+      expect(mocks.asset.claimUpload).not.toHaveBeenCalled();
+
+      await sut.cancelUpload(creator, id, res() as any);
+      expect(mocks.asset.claimUpload).toHaveBeenCalled();
+    });
+
+    it("should keep a shared link away from the owner's own uploads", async () => {
+      mocks.asset.getUploadCreator.mockResolvedValue({
+        status: AssetStatus.Partial,
+        sessionId: factory.uuid(),
+        apiKeyId: null,
+        sharedLinkId: null,
+      });
+      const response = res();
+
+      await sut.getUploadStatus(factory.auth({ sharedLink: { allowUpload: true } }), response as any, factory.uuid(), {
+        version: 8,
+      });
+
+      expect(response.status).toHaveBeenCalledWith(404);
+    });
+
+    it('should not report a finished upload to a shared link', async () => {
+      mocks.asset.getUploadCreator.mockResolvedValue({
+        status: AssetStatus.Active,
+        sessionId: null,
+        apiKeyId: null,
+        sharedLinkId: null,
+      });
+      const response = res();
+
+      await sut.getUploadStatus(factory.auth({ sharedLink: { allowUpload: true } }), response as any, factory.uuid(), {
+        version: 8,
+      });
+
+      expect(response.status).toHaveBeenCalledWith(404);
+      expect(mocks.storage.stat).not.toHaveBeenCalled();
+    });
+
+    it("should not hand a shared link the location of the owner's upload of the same file", async () => {
+      const response = res();
+      const dto = {
+        contentLength: 10,
+        uploadLength: 100,
+        uploadComplete: false,
+        version: 8,
+        checksum: Buffer.from('x'),
+      };
+      mocks.asset.getUploadAssetIdByChecksum.mockResolvedValue({
+        id: 'owner-upload',
+        status: AssetStatus.Partial,
+        createdAt: new Date(),
+      });
+      mocks.asset.getUploadCreator.mockResolvedValue({
+        status: AssetStatus.Partial,
+        sessionId: factory.uuid(),
+        apiKeyId: null,
+        sharedLinkId: null,
+      });
+
+      await sut.startUpload(
+        factory.auth({ sharedLink: { allowUpload: true } }),
+        {} as any,
+        response as any,
+        { ...dto, assetData: { filename: 'a.jpg', fileCreatedAt: new Date(), fileModifiedAt: new Date() } } as any,
+      );
+
+      expect(response.status).toHaveBeenCalledWith(409);
+      expect(response.setHeader).not.toHaveBeenCalledWith('Location', expect.anything());
+      expect(mocks.asset.claimUpload).not.toHaveBeenCalled();
+    });
+
     it("should answer 404 without aborting the owner's request when another user touches an upload", async () => {
       const id = factory.uuid();
       const ownerRequest = { destroy: vi.fn(), on: vi.fn() };
       (sut as any).activeRequests.set(id, { req: ownerRequest, startTime: new Date(0), settled: Promise.resolve() });
+      mocks.asset.getUploadCreator.mockResolvedValue(undefined);
       mocks.asset.getCompletionMetadata.mockResolvedValue(undefined);
       const response = res();
 

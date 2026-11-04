@@ -125,6 +125,19 @@ where
 returning
   "asset_upload"."assetId"
 
+-- AssetRepository.getUploadCreator
+select
+  "asset"."status",
+  "asset_upload"."sessionId",
+  "asset_upload"."apiKeyId",
+  "asset_upload"."sharedLinkId"
+from
+  "asset"
+  left join "asset_upload" on "asset_upload"."assetId" = "asset"."id"
+where
+  "asset"."id" = $1
+  and "asset"."ownerId" = $2
+
 -- AssetRepository.countPartialUploads
 select
   count(*) as "count"

@@ -430,6 +430,98 @@ describe('resumable uploads', () => {
     });
   });
 
+  describe('who may touch an upload', () => {
+    let linkA: Auth;
+    let linkB: Auth;
+
+    beforeAll(async () => {
+      const album = await utils.createAlbum(user.accessToken, { albumName: 'uploads' });
+      const [a, b] = await Promise.all(
+        [1, 2].map(() =>
+          utils.createSharedLink(user.accessToken, {
+            type: SharedLinkType.Album,
+            albumId: album.id,
+            allowUpload: true,
+          }),
+        ),
+      );
+      linkA = { header: 'x-immich-share-key', value: a.key };
+      linkB = { header: 'x-immich-share-key', value: b.key };
+    });
+
+    it('should only let the shared link that started an upload see, append to or cancel it', async () => {
+      const content = randomBytes(1000);
+      const started = await startUpload(linkA, content, content.subarray(0, 100));
+      const location = started.headers['location'];
+
+      for (const other of [linkB, bearer(user.accessToken)]) {
+        await expect(getOffset(other, location)).resolves.toHaveProperty('status', 404);
+        await expect(append(other, location, 100, content.subarray(100), true)).resolves.toHaveProperty('status', 404);
+        await expect(request(baseUrl).delete(location).set(other.header, other.value)).resolves.toHaveProperty(
+          'status',
+          404,
+        );
+      }
+
+      await expect(getOffset(linkA, location)).resolves.toEqual(expect.objectContaining({ status: 204, offset: 100 }));
+      await expect(append(linkA, location, 100, content.subarray(100), true)).resolves.toHaveProperty('status', 200);
+    });
+
+    it("should keep a shared link away from the owner's uploads, even when it uploads the same file", async () => {
+      const content = randomBytes(1000);
+      const owners = await startUpload(bearer(user.accessToken), content, content.subarray(0, 100));
+      const location = owners.headers['location'];
+
+      await expect(getOffset(linkA, location)).resolves.toHaveProperty('status', 404);
+      const sameFile = await startUpload(linkA, content, content.subarray(0, 100));
+      expect(sameFile.status).toBe(409);
+      expect(sameFile.headers['location']).toBeUndefined();
+
+      await expect(getOffset(bearer(user.accessToken), location)).resolves.toEqual(
+        expect.objectContaining({ status: 204, offset: 100 }),
+      );
+    });
+
+    it('should let the owner restart an upload a shared link left unfinished', async () => {
+      const content = randomBytes(1000);
+      const linkUpload = await startUpload(linkA, content, content.subarray(0, 100));
+
+      const restarted = await startUpload(bearer(user.accessToken), content, content.subarray(0, 100));
+
+      expect(restarted.status).toBe(201);
+      expect(restarted.headers['location']).not.toBe(linkUpload.headers['location']);
+      await expect(getOffset(linkA, linkUpload.headers['location'])).resolves.toHaveProperty('status', 404);
+    });
+
+    it('should report a finished upload only to its owner, not to shared links', async () => {
+      const content = randomBytes(1000);
+      const id = await uploadInChunks(bearer(user.accessToken), content, 400);
+
+      await expect(getOffset(bearer(user.accessToken), `/api/upload/${id}`)).resolves.toEqual(
+        expect.objectContaining({ status: 204, complete: '?1' }),
+      );
+      await expect(getOffset(linkA, `/api/upload/${id}`)).resolves.toHaveProperty('status', 404);
+    });
+
+    it('should not let generic asset routes trash, restore or read a partial upload', async () => {
+      const content = randomBytes(1000);
+      const started = await startUpload(bearer(user.accessToken), content, content.subarray(0, 100));
+      const id = started.headers['location'].replace('/api/upload/', '');
+
+      const trashed = await request(app)
+        .delete('/assets')
+        .set('Authorization', `Bearer ${user.accessToken}`)
+        .send({ ids: [id] });
+      expect(trashed.status).toBe(400);
+      const read = await request(app).get(`/assets/${id}`).set('Authorization', `Bearer ${user.accessToken}`);
+      expect(read.status).toBe(400);
+
+      await expect(getOffset(bearer(user.accessToken), started.headers['location'])).resolves.toEqual(
+        expect.objectContaining({ status: 204, offset: 100 }),
+      );
+    });
+  });
+
   describe('per-user limits', () => {
     let quotaUser: LoginResponseDto;
 

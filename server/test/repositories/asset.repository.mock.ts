@@ -50,6 +50,7 @@ export const newAssetRepositoryMock = (): Mocked<RepositoryInterface<AssetReposi
     claimUpload: vitest.fn(),
     hasPartialUpload: vitest.fn(),
     countPartialUploads: vitest.fn(),
+    getUploadCreator: vitest.fn(),
     refreshUploadClaim: vitest.fn(),
     releaseUploadClaim: vitest.fn(),
     createWithMetadata: vitest.fn(),
