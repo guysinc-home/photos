@@ -25,6 +25,41 @@ type ReferenceObject = Extract<ReferenceOrSchemaObject, { $ref: unknown }>;
 type SchemaObject = Exclude<ReferenceOrSchemaObject, ReferenceObject>;
 
 export class ImmichStartupError extends Error {}
+
+export class Semaphore {
+  private active = 0;
+  private waiting: Array<() => void> = [];
+
+  constructor(private readonly size: number) {}
+
+  async run<T>(task: () => Promise<T>): Promise<T> {
+    await this.acquire();
+    try {
+      return await task();
+    } finally {
+      this.release();
+    }
+  }
+
+  private acquire(): Promise<void> {
+    if (this.active < this.size) {
+      this.active++;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      this.waiting.push(resolve);
+    });
+  }
+
+  private release() {
+    const next = this.waiting.shift();
+    if (next) {
+      next();
+      return;
+    }
+    this.active--;
+  }
+}
 export const isStartUpError = (error: unknown): error is ImmichStartupError => error instanceof ImmichStartupError;
 
 export const getKeyByValue = (object: Record<string, unknown>, value: unknown) =>

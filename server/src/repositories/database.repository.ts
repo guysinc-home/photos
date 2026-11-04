@@ -29,6 +29,7 @@ import 'src/schema/index.js'; // make sure all schema definitions are imported f
 // eslint-disable-next-line import-x/no-duplicates
 import { DB } from 'src/schema/index.js';
 import { vectorIndexQuery } from 'src/utils/database.js';
+import { Semaphore } from 'src/utils/misc.js';
 
 export let cachedVectorExtension: VectorExtension | undefined;
 export async function getVectorExtension(runner: Kysely<DB>): Promise<VectorExtension> {
@@ -56,9 +57,12 @@ export const probes: Record<VectorIndex, number> = {
   [VectorIndex.Face]: 1,
 };
 
+const UUID_LOCK_CONNECTIONS = 4;
+
 @Injectable()
 export class DatabaseRepository {
   private readonly asyncLock = new AsyncLock();
+  private readonly uuidLockConnections = new Semaphore(UUID_LOCK_CONNECTIONS);
 
   constructor(
     @InjectKysely() private db: Kysely<DB>,
@@ -471,7 +475,13 @@ export class DatabaseRepository {
     return res as R;
   }
 
-  async withUuidLock<R>(uuid: string, callback: () => Promise<R>): Promise<R> {
+  withUuidLock<R>(uuid: string, callback: () => Promise<R>): Promise<R> {
+    return this.asyncLock.acquire(`uuid:${uuid}`, () =>
+      this.uuidLockConnections.run(() => this.holdUuidLock(uuid, callback)),
+    );
+  }
+
+  private async holdUuidLock<R>(uuid: string, callback: () => Promise<R>): Promise<R> {
     let res;
     await this.db.connection().execute(async (connection) => {
       try {
