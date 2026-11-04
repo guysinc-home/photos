@@ -21,6 +21,7 @@ import { AssetDownloadOriginalDto } from 'src/dtos/asset.dto.js';
 import { AuthDto, isEditedOnly, isMetadataHidden } from 'src/dtos/auth.dto.js';
 import {
   AssetFileType,
+  AssetStatus,
   AssetVisibility,
   CacheControl,
   ChecksumAlgorithm,
@@ -51,7 +52,7 @@ export class AssetMediaService extends BaseService {
     await this.requireAccess({ auth, permission: Permission.AssetUpload, ids: [auth.user.id] });
 
     const asset = await this.assetRepository.getUploadAssetIdByChecksum(auth.user.id, fromChecksum(checksum));
-    if (!asset) {
+    if (!asset || asset.status === AssetStatus.Partial) {
       return;
     }
 
@@ -124,11 +125,21 @@ export class AssetMediaService extends BaseService {
     await this.jobRepository.queue({ name: JobName.FileDelete, data: { files: [uploadPath] } });
   }
 
-  async uploadAsset(
+  uploadAsset(
     auth: AuthDto,
     dto: AssetMediaCreateDto,
     file: UploadFile,
     sidecarFile?: UploadFile,
+  ): Promise<AssetMediaResponseDto> {
+    return this.createUploadedAsset(auth, dto, file, sidecarFile, true);
+  }
+
+  private async createUploadedAsset(
+    auth: AuthDto,
+    dto: AssetMediaCreateDto,
+    file: UploadFile,
+    sidecarFile: UploadFile | undefined,
+    canReplacePartialUpload: boolean,
   ): Promise<AssetMediaResponseDto> {
     let asset: Asset | undefined;
     try {
@@ -209,6 +220,14 @@ export class AssetMediaService extends BaseService {
 
       return { id: asset.id, status: AssetMediaStatus.CREATED };
     } catch (error: any) {
+      if (
+        canReplacePartialUpload &&
+        isAssetChecksumConstraint(error) &&
+        (await this.removePartialUpload(auth.user.id, file.checksum))
+      ) {
+        return this.createUploadedAsset(auth, dto, file, sidecarFile, false);
+      }
+
       // clean up files
       await this.jobRepository.queue({
         name: JobName.FileDelete,
@@ -346,6 +365,25 @@ export class AssetMediaService extends BaseService {
         };
       }),
     };
+  }
+
+  private async removePartialUpload(ownerId: string, checksum: Buffer): Promise<boolean> {
+    const existing = await this.assetRepository.getUploadAssetIdByChecksum(ownerId, checksum);
+    if (existing?.status !== AssetStatus.Partial) {
+      return false;
+    }
+
+    return this.databaseRepository.withUuidLock(existing.id, async () => {
+      const partial = await this.assetRepository.getCompletionMetadata(existing.id, ownerId);
+      if (partial?.status !== AssetStatus.Partial) {
+        return false;
+      }
+
+      this.logger.log(`Replacing partial upload ${existing.id} with a complete upload of the same file`);
+      await this.storageRepository.unlink(partial.path);
+      await this.assetRepository.removeAndDecrementQuota(existing.id);
+      return true;
+    });
   }
 
   private async addToSharedLink(sharedLink: AuthSharedLink, assetId: string) {
