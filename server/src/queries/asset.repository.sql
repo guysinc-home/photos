@@ -141,6 +141,48 @@ with
     returning
       *
   ),
+  "resynced_exif" as (
+    update "asset_exif"
+    set
+      "updatedAt" = clock_timestamp()
+    where
+      "assetId" in (
+        select
+          "completed_asset"."id"
+        from
+          "completed_asset"
+      )
+    returning
+      "asset_exif"."assetId"
+  ),
+  "resynced_metadata" as (
+    update "asset_metadata"
+    set
+      "updatedAt" = clock_timestamp()
+    where
+      "assetId" in (
+        select
+          "completed_asset"."id"
+        from
+          "completed_asset"
+      )
+    returning
+      "asset_metadata"."assetId"
+  ),
+  "resynced_album_asset" as (
+    update "album_asset"
+    set
+      "updatedAt" = clock_timestamp()
+    where
+      "assetId" in (
+        select
+          "completed_asset"."id"
+        from
+          "completed_asset"
+      )
+    returning
+      "album_asset"."assetId"
+  ),
   "shared_link" as (
     insert into
       "album_asset" ("albumId", "assetId")
