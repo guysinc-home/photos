@@ -67,6 +67,8 @@ export type AdminConfigUploadBackupDto = {
     maxAgeHours: number;
     /** Largest request body, in bytes, that resumable upload clients are told to send (Upload-Limit max-append-size). 0 advertises no limit */
     maxAppendSizeBytes: number;
+    /** Unfinished resumable uploads one user may have at a time. 0 means no limit */
+    maxPartialUploads: number;
 };
 export type AdminConfigBackupsDto = {
     /** Whether the backups feature is enabled */
@@ -8651,6 +8653,7 @@ export enum ManualJobName {
     MemoryCleanup = "memory-cleanup",
     MemoryCreate = "memory-create",
     BackupDatabase = "backup-database",
+    UploadCleanup = "upload-cleanup",
     IntegrityMissingFiles = "integrity-missing-files",
     IntegrityUntrackedFiles = "integrity-untracked-files",
     IntegrityChecksumMismatch = "integrity-checksum-mismatch",

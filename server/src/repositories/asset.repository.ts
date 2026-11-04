@@ -550,6 +550,18 @@ export class AssetRepository {
     return !!claimed;
   }
 
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.DATE] })
+  async countPartialUploads(ownerId: string, createdAfter: Date): Promise<number> {
+    const { count } = await this.db
+      .selectFrom('asset')
+      .select((eb) => eb.fn.countAll<number>().as('count'))
+      .where('ownerId', '=', ownerId)
+      .where('status', '=', sql.lit(AssetStatus.Partial))
+      .where('createdAt', '>', createdAfter)
+      .executeTakeFirstOrThrow();
+    return Number(count);
+  }
+
   @GenerateSql({ params: [DummyValue.UUID] })
   async hasPartialUpload(assetId: string): Promise<boolean> {
     const asset = await this.db

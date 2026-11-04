@@ -20478,11 +20478,18 @@
             "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
+          },
+          "maxPartialUploads": {
+            "description": "Unfinished resumable uploads one user may have at a time. 0 means no limit",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [
           "maxAgeHours",
-          "maxAppendSizeBytes"
+          "maxAppendSizeBytes",
+          "maxPartialUploads"
         ],
         "type": "object"
       },
@@ -23959,6 +23966,7 @@
           "memory-cleanup",
           "memory-create",
           "backup-database",
+          "upload-cleanup",
           "integrity-missing-files",
           "integrity-untracked-files",
           "integrity-checksum-mismatch",

@@ -174,6 +174,10 @@ const AdminConfigSchemaWithVisibility = z
         upload: z
           .object({
             maxAgeHours: z.int().min(1).describe('Max age in hours'),
+            maxPartialUploads: z
+              .int()
+              .min(0)
+              .describe('Unfinished resumable uploads one user may have at a time. 0 means no limit'),
             maxAppendSizeBytes: z
               .int()
               .min(0)
@@ -606,6 +610,7 @@ export const defaults = Object.freeze<SystemConfig>({
     upload: {
       maxAgeHours: 72,
       maxAppendSizeBytes: 90 * 1024 * 1024,
+      maxPartialUploads: 20,
     },
   },
   ffmpeg: {

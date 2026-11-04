@@ -6,10 +6,17 @@ import { authStub } from 'test/fixtures/auth.stub.js';
 import { factory } from 'test/small.factory.js';
 import { ServiceMocks, newTestService } from 'test/utils.js';
 
+const res = () => ({
+  status: vi.fn().mockReturnThis(),
+  setHeader: vi.fn().mockReturnThis(),
+  contentType: vi.fn().mockReturnThis(),
+  send: vi.fn(),
+});
+
 const getUploadLimit = async (sut: AssetUploadService) => {
-  const res = { status: vi.fn().mockReturnThis(), setHeader: vi.fn().mockReturnThis(), send: vi.fn() };
-  await sut.getUploadOptions(res as any);
-  return res.setHeader.mock.calls.find(([name]) => name === 'Upload-Limit')?.[1];
+  const response = res();
+  await sut.getUploadOptions(response as any);
+  return response.setHeader.mock.calls.find(([name]) => name === 'Upload-Limit')?.[1];
 };
 
 describe(AssetUploadService.name, () => {
@@ -22,6 +29,8 @@ describe(AssetUploadService.name, () => {
     mocks.asset.claimUpload.mockResolvedValue(true);
     mocks.asset.hasPartialUpload.mockResolvedValue(true);
     mocks.asset.releaseUploadClaim.mockResolvedValue();
+    mocks.asset.getUploadAssetIdByChecksum.mockResolvedValue(undefined);
+    mocks.asset.countPartialUploads.mockResolvedValue(0);
   });
 
   describe('onStart', () => {
@@ -53,6 +62,7 @@ describe(AssetUploadService.name, () => {
         id: assetId,
         path: expect.stringContaining(assetId),
         status: AssetStatus.Partial,
+        createdAt: expect.any(Date),
         isDuplicate: false,
       });
 
@@ -149,11 +159,12 @@ describe(AssetUploadService.name, () => {
       const checksumError = new Error('duplicate key value violates unique constraint');
       (checksumError as any).constraint_name = ASSET_CHECKSUM_CONSTRAINT;
 
+      const createdAt = new Date();
       mocks.asset.createWithMetadata.mockRejectedValue(checksumError);
-      mocks.asset.getUploadAssetIdByChecksum.mockResolvedValue({
+      mocks.asset.getUploadAssetIdByChecksum.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
         id: existingAssetId,
         status: AssetStatus.Partial,
-        createdAt: new Date(),
+        createdAt,
       });
 
       const result = await sut.onStart(authStub.user1, mockDto);
@@ -162,10 +173,46 @@ describe(AssetUploadService.name, () => {
         id: existingAssetId,
         path: expect.any(String),
         status: AssetStatus.Partial,
+        createdAt,
         isDuplicate: true,
       });
 
       expect(mocks.asset.getUploadAssetIdByChecksum).toHaveBeenCalledWith(authStub.user1.user.id, mockDto.checksum);
+    });
+
+    it('should refuse a new upload once the user has the maximum number of unfinished uploads', async () => {
+      mocks.asset.countPartialUploads.mockResolvedValue(20);
+
+      await expect(sut.onStart(authStub.user1, mockDto)).rejects.toMatchObject({ status: 429 });
+      expect(mocks.asset.createWithMetadata).not.toHaveBeenCalled();
+    });
+
+    it('should only count unfinished uploads that have not expired', async () => {
+      await sut.onStart(authStub.user1, mockDto);
+
+      const [ownerId, createdAfter] = mocks.asset.countPartialUploads.mock.calls[0];
+      expect(ownerId).toBe(authStub.user1.user.id);
+      expect(Date.now() - createdAfter.getTime()).toBeCloseTo(72 * 3_600_000, -4);
+    });
+
+    it('should not count against the cap when the file already has an upload', async () => {
+      mocks.asset.countPartialUploads.mockResolvedValue(20);
+      mocks.asset.getUploadAssetIdByChecksum.mockResolvedValue({
+        id: 'existing',
+        status: AssetStatus.Partial,
+        createdAt: new Date(),
+      });
+
+      await expect(sut.onStart(authStub.user1, mockDto)).resolves.toMatchObject({ id: 'existing', isDuplicate: true });
+      expect(mocks.asset.countPartialUploads).not.toHaveBeenCalled();
+    });
+
+    it('should not cap uploads when the limit is 0', async () => {
+      mocks.systemMetadata.get.mockResolvedValue({ backup: { upload: { maxPartialUploads: 0 } } });
+
+      await sut.onStart(authStub.user1, mockDto);
+
+      expect(mocks.asset.countPartialUploads).not.toHaveBeenCalled();
     });
 
     it('should throw InternalServerErrorException if duplicate lookup fails', async () => {
@@ -321,6 +368,56 @@ describe(AssetUploadService.name, () => {
       mocks.systemMetadata.get.mockResolvedValue({ backup: { upload: { maxAppendSizeBytes: 50_000_000 } } });
 
       await expect(getUploadLimit(sut)).resolves.toBe('min-size=1, max-age=259200, max-append-size=50000000');
+    });
+
+    it('should reject a request body larger than max-append-size with 413 and Upload-Limit', async () => {
+      const response = res();
+      const dto = { contentLength: 94_371_841, uploadLength: 200_000_000, uploadComplete: false, version: 8 } as any;
+
+      await sut.startUpload(factory.auth(), {} as any, response as any, dto);
+
+      expect(response.status).toHaveBeenCalledWith(413);
+      expect(response.setHeader).toHaveBeenCalledWith(
+        'Upload-Limit',
+        expect.stringContaining('max-append-size=94371840'),
+      );
+      expect(mocks.asset.createWithMetadata).not.toHaveBeenCalled();
+    });
+
+    it('should advertise the remaining lifetime of an existing upload as max-age', async () => {
+      const response = res();
+      mocks.asset.getCompletionMetadata.mockResolvedValue({
+        path: '/upload/file.jpg',
+        status: AssetStatus.Partial,
+        createdAt: new Date(Date.now() - 3_600_000),
+        fileModifiedAt: new Date(),
+        checksum: Buffer.from('checksum'),
+        size: 10,
+      });
+      mocks.storage.stat.mockResolvedValue({ size: 5 } as any);
+
+      await sut.getUploadStatus(factory.auth(), response as any, factory.uuid(), { version: 8 });
+
+      const limit = response.setHeader.mock.calls.find(([name]) => name === 'Upload-Limit')?.[1] as string;
+      const maxAge = Number(/max-age=(\d+)/.exec(limit)?.[1]);
+      expect(maxAge).toBeGreaterThan(71 * 3600 - 5);
+      expect(maxAge).toBeLessThanOrEqual(71 * 3600);
+    });
+
+    it('should answer 404 for an upload past its max-age', async () => {
+      const response = res();
+      mocks.asset.getCompletionMetadata.mockResolvedValue({
+        path: '/upload/file.jpg',
+        status: AssetStatus.Partial,
+        createdAt: new Date(Date.now() - 73 * 3_600_000),
+        fileModifiedAt: new Date(),
+        checksum: Buffer.from('checksum'),
+        size: 10,
+      });
+
+      await sut.getUploadStatus(factory.auth(), response as any, factory.uuid(), { version: 8 });
+
+      expect(response.status).toHaveBeenCalledWith(404);
     });
 
     it('should not advertise max-append-size when it is 0', async () => {
