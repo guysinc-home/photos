@@ -58,6 +58,7 @@ export const newStorageRepositoryMock = (): Mocked<RepositoryInterface<StorageRe
     createFile: vitest.fn(),
     createWriteStream: vitest.fn(),
     createOrAppendWriteStream: vitest.fn(),
+    createWriteStreamAt: vitest.fn(),
     createOrOverwriteFile: vitest.fn(),
     existsSync: vitest.fn(),
     overwriteFile: vitest.fn(),
