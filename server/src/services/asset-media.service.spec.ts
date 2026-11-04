@@ -209,6 +209,16 @@ describe(AssetMediaService.name, () => {
       expect(mocks.asset.getUploadAssetIdByChecksum).toHaveBeenCalledWith(authStub.admin.user.id, file1);
     });
 
+    it('should not report a partial upload as an existing asset', async () => {
+      mocks.asset.getUploadAssetIdByChecksum.mockResolvedValue({
+        id: 'asset-id',
+        createdAt: new Date(),
+        status: AssetStatus.Partial,
+      });
+
+      await expect(sut.getUploadAssetIdByChecksum(authStub.admin, file1.toString('hex'))).resolves.toBeUndefined();
+    });
+
     it('should find an existing asset by base64', async () => {
       mocks.asset.getUploadAssetIdByChecksum.mockResolvedValue({
         id: 'asset-id',
@@ -402,6 +412,80 @@ describe(AssetMediaService.name, () => {
         data: { files: ['fake_path/asset_1.jpeg', undefined] },
       });
       expect(mocks.user.updateUsage).not.toHaveBeenCalled();
+    });
+
+    it('should replace a partial upload of the same file instead of reporting a duplicate', async () => {
+      const file = {
+        uuid: 'random-uuid',
+        originalPath: 'fake_path/asset_1.jpeg',
+        mimeType: 'image/jpeg',
+        checksum: Buffer.from('file hash', 'utf8'),
+        originalName: 'asset_1.jpeg',
+        size: 42,
+      };
+      const error = new Error('unique key violation');
+      (error as any).constraint_name = ASSET_CHECKSUM_CONSTRAINT;
+      const partialId = 'partial-id';
+
+      mocks.asset.create.mockRejectedValueOnce(error).mockResolvedValueOnce(assetEntity);
+      mocks.asset.getUploadAssetIdByChecksum.mockResolvedValue({
+        id: partialId,
+        createdAt: new Date(),
+        status: AssetStatus.Partial,
+      });
+      mocks.asset.getCompletionMetadata.mockResolvedValue({
+        path: 'upload/partial.jpeg',
+        status: AssetStatus.Partial,
+        fileModifiedAt: new Date(),
+        createdAt: new Date(),
+        checksum: file.checksum,
+        size: 42,
+      });
+
+      await expect(sut.uploadAsset(authStub.user1, createDto, file)).resolves.toEqual({
+        id: assetEntity.id,
+        status: AssetMediaStatus.CREATED,
+      });
+
+      expect(mocks.database.withUuidLock).toHaveBeenCalledWith(partialId, expect.any(Function));
+      expect(mocks.storage.unlink).toHaveBeenCalledWith('upload/partial.jpeg');
+      expect(mocks.asset.removeAndDecrementQuota).toHaveBeenCalledWith(partialId);
+      expect(mocks.asset.create).toHaveBeenCalledTimes(2);
+      expect(mocks.job.queue).not.toHaveBeenCalledWith(expect.objectContaining({ name: JobName.FileDelete }));
+    });
+
+    it('should only replace a partial upload once', async () => {
+      const file = {
+        uuid: 'random-uuid',
+        originalPath: 'fake_path/asset_1.jpeg',
+        mimeType: 'image/jpeg',
+        checksum: Buffer.from('file hash', 'utf8'),
+        originalName: 'asset_1.jpeg',
+        size: 0,
+      };
+      const error = new Error('unique key violation');
+      (error as any).constraint_name = ASSET_CHECKSUM_CONSTRAINT;
+
+      mocks.asset.create.mockRejectedValue(error);
+      mocks.asset.getUploadAssetIdByChecksum.mockResolvedValue({
+        id: 'partial-id',
+        createdAt: new Date(),
+        status: AssetStatus.Partial,
+      });
+      mocks.asset.getCompletionMetadata.mockResolvedValue({
+        path: 'upload/partial.jpeg',
+        status: AssetStatus.Partial,
+        fileModifiedAt: new Date(),
+        createdAt: new Date(),
+        checksum: file.checksum,
+        size: 0,
+      });
+
+      await expect(sut.uploadAsset(authStub.user1, createDto, file)).resolves.toEqual({
+        id: 'partial-id',
+        status: AssetMediaStatus.DUPLICATE,
+      });
+      expect(mocks.asset.create).toHaveBeenCalledTimes(2);
     });
 
     it('should throw an error if the duplicate could not be found by checksum', async () => {

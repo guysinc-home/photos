@@ -823,6 +823,7 @@ export class AssetRepository {
       .select(['id', 'checksum', 'deletedAt'])
       .where('ownerId', '=', asUuid(userId))
       .where('checksum', 'in', checksums)
+      .where('status', '!=', sql.lit(AssetStatus.Partial))
       .execute();
   }
 

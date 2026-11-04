@@ -450,6 +450,7 @@ from
 where
   "ownerId" = $1::uuid
   and "checksum" in ($2)
+  and "status" != 'partial'
 
 -- AssetRepository.getUploadAssetIdByChecksum
 select
