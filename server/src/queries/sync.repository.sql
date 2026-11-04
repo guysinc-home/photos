@@ -90,6 +90,7 @@ where
   and "album_asset"."updateId" <= $4
   and "album_asset"."updateId" > $5
   and "album_asset"."albumId" = $6
+  and "asset"."status" != 'partial'
 order by
   "album_asset"."updateId" asc
 
@@ -127,6 +128,7 @@ where
   "asset"."updateId" < $3
   and "asset"."updateId" > $4
   and "album_asset"."updateId" <= $5
+  and "asset"."status" != 'partial'
   and "album_user"."userId" = $6
 order by
   "asset"."updateId" asc
@@ -164,6 +166,7 @@ from
 where
   "album_asset"."updateId" < $3
   and "album_asset"."updateId" > $4
+  and "asset"."status" != 'partial'
   and "album_user"."userId" = $5
 order by
   "album_asset"."updateId" asc
@@ -199,11 +202,13 @@ select
 from
   "album_asset" as "album_asset"
   inner join "asset_exif" on "asset_exif"."assetId" = "album_asset"."assetId"
+  inner join "asset" on "asset"."id" = "album_asset"."assetId"
 where
   "album_asset"."updateId" < $1
   and "album_asset"."updateId" <= $2
   and "album_asset"."updateId" > $3
   and "album_asset"."albumId" = $4
+  and "asset"."status" != 'partial'
 order by
   "album_asset"."updateId" asc
 
@@ -238,10 +243,12 @@ select
 from
   "asset_exif" as "asset_exif"
   inner join "album_asset" on "album_asset"."assetId" = "asset_exif"."assetId"
+  inner join "asset" on "asset"."id" = "asset_exif"."assetId"
   inner join "album_user" on "album_user"."albumId" = "album_asset"."albumId"
 where
   "asset_exif"."updateId" < $1
   and "asset_exif"."updateId" > $2
+  and "asset"."status" != 'partial'
   and "album_asset"."updateId" <= $3
   and "album_user"."userId" = $4
 order by
@@ -278,11 +285,13 @@ select
 from
   "album_asset" as "album_asset"
   inner join "asset_exif" on "asset_exif"."assetId" = "album_asset"."assetId"
+  inner join "asset" on "asset"."id" = "album_asset"."assetId"
   inner join "album" on "album"."id" = "album_asset"."albumId"
   left join "album_user" on "album_user"."albumId" = "album_asset"."albumId"
 where
   "album_asset"."updateId" < $1
   and "album_asset"."updateId" > $2
+  and "asset"."status" != 'partial'
   and "album_user"."userId" = $3
 order by
   "album_asset"."updateId" asc
@@ -294,11 +303,13 @@ select
   "album_asset"."updateId"
 from
   "album_asset" as "album_asset"
+  inner join "asset" on "asset"."id" = "album_asset"."assetId"
 where
   "album_asset"."updateId" < $1
   and "album_asset"."updateId" <= $2
   and "album_asset"."updateId" > $3
   and "album_asset"."albumId" = $4
+  and "asset"."status" != 'partial'
 order by
   "album_asset"."updateId" asc
 
@@ -330,10 +341,12 @@ select
   "album_asset"."updateId"
 from
   "album_asset" as "album_asset"
+  inner join "asset" on "asset"."id" = "album_asset"."assetId"
   inner join "album_user" on "album_user"."albumId" = "album_asset"."albumId"
 where
   "album_asset"."updateId" < $1
   and "album_asset"."updateId" > $2
+  and "asset"."status" != 'partial'
   and "album_user"."userId" = $3
 order by
   "album_asset"."updateId" asc
@@ -439,6 +452,7 @@ where
   "asset"."updateId" < $1
   and "asset"."updateId" > $2
   and "ownerId" = $3
+  and "asset"."status" != 'partial'
 order by
   "asset"."updateId" asc
 
@@ -482,6 +496,7 @@ where
       "asset"
     where
       "ownerId" = $3
+      and "asset"."status" != 'partial'
   )
 order by
   "asset_exif"."updateId" asc
@@ -640,6 +655,7 @@ where
   "asset_metadata"."updateId" < $1
   and "asset_metadata"."updateId" > $2
   and "asset"."ownerId" = $3
+  and "asset"."status" != 'partial'
 order by
   "asset_metadata"."updateId" asc
 
@@ -889,6 +905,7 @@ where
   and "asset"."updateId" <= $3
   and "asset"."updateId" > $4
   and "ownerId" = $5
+  and "asset"."status" != 'partial'
 order by
   "asset"."updateId" asc
 
@@ -948,6 +965,7 @@ where
     where
       "sharedWithId" = $4
   )
+  and "asset"."status" != 'partial'
 order by
   "asset"."updateId" asc
 
@@ -987,6 +1005,7 @@ where
   and "asset_exif"."updateId" <= $2
   and "asset_exif"."updateId" > $3
   and "asset"."ownerId" = $4
+  and "asset"."status" != 'partial'
 order by
   "asset_exif"."updateId" asc
 
@@ -1037,6 +1056,7 @@ where
         where
           "sharedWithId" = $3
       )
+      and "asset"."status" != 'partial'
   )
 order by
   "asset_exif"."updateId" asc
