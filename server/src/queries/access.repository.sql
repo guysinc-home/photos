@@ -105,6 +105,7 @@ from
 where
   "asset"."id" in ($1)
   and "asset"."ownerId" = $2
+  and "asset"."status" != 'partial'
   and "asset"."visibility" != $3
 
 -- AccessRepository.asset.checkPartnerAccess
@@ -118,6 +119,7 @@ from
   and "asset"."deletedAt" is null
 where
   "partner"."sharedWithId" = $1
+  and "asset"."status" != 'partial'
   and (
     "asset"."visibility" = 'timeline'
     or "asset"."visibility" = 'hidden'
