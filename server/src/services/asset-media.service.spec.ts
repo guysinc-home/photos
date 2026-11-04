@@ -427,6 +427,10 @@ describe(AssetMediaService.name, () => {
       (error as any).constraint_name = ASSET_CHECKSUM_CONSTRAINT;
       const partialId = 'partial-id';
 
+      mocks.asset.claimUpload.mockResolvedValue(true);
+      mocks.asset.hasPartialUpload.mockResolvedValue(true);
+      mocks.asset.releaseUploadClaim.mockResolvedValue();
+      mocks.event.emit.mockResolvedValue();
       mocks.asset.create.mockRejectedValueOnce(error).mockResolvedValueOnce(assetEntity);
       mocks.asset.getUploadAssetIdByChecksum.mockResolvedValue({
         id: partialId,
@@ -447,7 +451,9 @@ describe(AssetMediaService.name, () => {
         status: AssetMediaStatus.CREATED,
       });
 
-      expect(mocks.database.withUuidLock).toHaveBeenCalledWith(partialId, expect.any(Function));
+      expect(mocks.asset.claimUpload).toHaveBeenCalledWith(partialId, expect.any(String));
+      expect(mocks.event.emit).toHaveBeenCalledWith('UploadAbort', expect.objectContaining({ assetId: partialId }));
+      expect(mocks.asset.releaseUploadClaim).toHaveBeenCalledWith(partialId, expect.any(String));
       expect(mocks.storage.unlink).toHaveBeenCalledWith('upload/partial.jpeg');
       expect(mocks.asset.removeAndDecrementQuota).toHaveBeenCalledWith(partialId);
       expect(mocks.asset.create).toHaveBeenCalledTimes(2);
@@ -466,6 +472,10 @@ describe(AssetMediaService.name, () => {
       const error = new Error('unique key violation');
       (error as any).constraint_name = ASSET_CHECKSUM_CONSTRAINT;
 
+      mocks.asset.claimUpload.mockResolvedValue(true);
+      mocks.asset.hasPartialUpload.mockResolvedValue(true);
+      mocks.asset.releaseUploadClaim.mockResolvedValue();
+      mocks.event.emit.mockResolvedValue();
       mocks.asset.create.mockRejectedValue(error);
       mocks.asset.getUploadAssetIdByChecksum.mockResolvedValue({
         id: 'partial-id',

@@ -32,7 +32,7 @@ import {
 import { AuthRequest } from 'src/middleware/auth.guard.js';
 import { BaseService } from 'src/services/base.service.js';
 import { requireUploadAccess } from 'src/utils/access.js';
-import { asUploadRequest, onBeforeLink } from 'src/utils/asset.util.js';
+import { UPLOAD_CLAIM_WAIT_MS, asUploadRequest, claimPartialUpload, onBeforeLink } from 'src/utils/asset.util.js';
 import { isAssetChecksumConstraint } from 'src/utils/database.js';
 import { ImmichFileResponse, getFileNameWithoutExtension, getFilenameExtension } from 'src/utils/file.js';
 import { mimeTypes } from 'src/utils/mime-types.js';
@@ -373,7 +373,15 @@ export class AssetMediaService extends BaseService {
       return false;
     }
 
-    return this.databaseRepository.withUuidLock(existing.id, async () => {
+    const abort = { assetId: existing.id, abortTime: new Date() };
+    await this.eventRepository.emit('UploadAbort', abort);
+    this.websocketRepository.serverSend('UploadAbort', abort);
+
+    const writerId = this.cryptoRepository.randomUUID();
+    if (!(await claimPartialUpload(this.assetRepository, existing.id, writerId, UPLOAD_CLAIM_WAIT_MS))) {
+      return false;
+    }
+    try {
       const partial = await this.assetRepository.getCompletionMetadata(existing.id, ownerId);
       if (partial?.status !== AssetStatus.Partial) {
         return false;
@@ -383,7 +391,9 @@ export class AssetMediaService extends BaseService {
       await this.storageRepository.unlink(partial.path);
       await this.assetRepository.removeAndDecrementQuota(existing.id);
       return true;
-    });
+    } finally {
+      await this.assetRepository.releaseUploadClaim(existing.id, writerId);
+    }
   }
 
   private async addToSharedLink(sharedLink: AuthSharedLink, assetId: string) {
