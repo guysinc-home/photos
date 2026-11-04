@@ -173,6 +173,10 @@ const withBoundingBox = <T>(qb: SelectQueryBuilder<DB, 'asset' | 'asset_exif', T
   );
 };
 
+export type UploadCredentials = { sessionId?: string; apiKeyId?: string; sharedLinkId?: string };
+
+const UPLOAD_CLAIM_TIMEOUT = '30 seconds';
+
 @Injectable()
 export class AssetRepository {
   constructor(@InjectKysely() private db: Kysely<DB>) {}
@@ -451,6 +455,7 @@ export class AssetRepository {
     asset: Insertable<AssetTable> & { id: string },
     size: number,
     metadata?: Omit<Insertable<AssetMetadataTable>, 'assetId'>[],
+    upload: UploadCredentials = {},
   ) {
     let query = this.db;
     if (asset.livePhotoVideoId) {
@@ -479,6 +484,21 @@ export class AssetRepository {
           .insertInto('asset_exif')
           .columns(['assetId', 'fileSizeInByte'])
           .expression((eb) => eb.selectFrom('asset').select(['asset.id', eb.val(size).as('fileSizeInByte')])),
+      )
+      .with('upload', (qb) =>
+        qb
+          .insertInto('asset_upload')
+          .columns(['assetId', 'sessionId', 'apiKeyId', 'sharedLinkId'])
+          .expression((eb) =>
+            eb
+              .selectFrom('asset')
+              .select([
+                'asset.id',
+                eb.val(upload.sessionId ?? null).as('sessionId'),
+                eb.val(upload.apiKeyId ?? null).as('apiKeyId'),
+                eb.val(upload.sharedLinkId ?? null).as('sharedLinkId'),
+              ]),
+          ),
       );
 
     if (metadata && metadata.length > 0) {
@@ -492,6 +512,74 @@ export class AssetRepository {
       .from('asset')
       .set({ quotaUsageInBytes: sql`"quotaUsageInBytes" + ${size}` })
       .whereRef('user.id', '=', 'asset.ownerId')
+      .execute();
+  }
+
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })
+  async claimUpload(assetId: string, writerId: string): Promise<boolean> {
+    const claimed = await this.db
+      .insertInto('asset_upload')
+      .columns(['assetId', 'writerId', 'writerHeartbeatAt'])
+      .expression((eb) =>
+        eb
+          .selectFrom('asset')
+          .select(['asset.id', eb.val(writerId).as('writerId'), sql<Date>`clock_timestamp()`.as('writerHeartbeatAt')])
+          .where('asset.id', '=', assetId)
+          .where('asset.status', '=', sql.lit(AssetStatus.Partial)),
+      )
+      .onConflict((oc) =>
+        oc
+          .column('assetId')
+          .doUpdateSet((eb) => ({
+            writerId: eb.ref('excluded.writerId'),
+            writerHeartbeatAt: eb.ref('excluded.writerHeartbeatAt'),
+          }))
+          .where((eb) =>
+            eb.or([
+              eb('asset_upload.writerId', 'is', null),
+              eb(
+                'asset_upload.writerHeartbeatAt',
+                '<',
+                sql<Date>`clock_timestamp() - ${UPLOAD_CLAIM_TIMEOUT}::interval`,
+              ),
+            ]),
+          ),
+      )
+      .returning('asset_upload.assetId')
+      .executeTakeFirst();
+    return !!claimed;
+  }
+
+  @GenerateSql({ params: [DummyValue.UUID] })
+  async hasPartialUpload(assetId: string): Promise<boolean> {
+    const asset = await this.db
+      .selectFrom('asset')
+      .select('id')
+      .where('id', '=', assetId)
+      .where('status', '=', sql.lit(AssetStatus.Partial))
+      .executeTakeFirst();
+    return !!asset;
+  }
+
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })
+  async refreshUploadClaim(assetId: string, writerId: string): Promise<boolean> {
+    const refreshed = await this.db
+      .updateTable('asset_upload')
+      .set({ writerHeartbeatAt: sql<Date>`clock_timestamp()` })
+      .where('assetId', '=', assetId)
+      .where('writerId', '=', writerId)
+      .returning('assetId')
+      .executeTakeFirst();
+    return !!refreshed;
+  }
+
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })
+  async releaseUploadClaim(assetId: string, writerId: string): Promise<void> {
+    await this.db
+      .updateTable('asset_upload')
+      .set({ writerId: null, writerHeartbeatAt: null })
+      .where('assetId', '=', assetId)
+      .where('writerId', '=', writerId)
       .execute();
   }
 
@@ -550,6 +638,12 @@ export class AssetRepository {
           .set({ updatedAt: sql`clock_timestamp()` })
           .where('assetId', 'in', (eb) => eb.selectFrom('completed_asset').select('completed_asset.id'))
           .returning('album_asset.assetId'),
+      )
+      .with('finished_upload', (qb) =>
+        qb
+          .deleteFrom('asset_upload')
+          .where('assetId', 'in', (eb) => eb.selectFrom('completed_asset').select('completed_asset.id'))
+          .returning('asset_upload.assetId'),
       );
 
     if (!sharedLink) {

@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { IBulkAsset, ImmichFile, UploadFile, UploadRequest } from 'src/types.js';
 import { StorageCore } from 'src/cores/storage.core.js';
 import { AssetFile } from 'src/database.js';
@@ -232,4 +233,23 @@ export const getDimensions = ({
 
 export const isPanorama = (asset: { projectionType: string | null; originalFileName: string }) => {
   return asset.projectionType === 'EQUIRECTANGULAR' || asset.originalFileName.toLowerCase().endsWith('.insp');
+};
+
+export const UPLOAD_CLAIM_WAIT_MS = 35_000;
+const UPLOAD_CLAIM_RETRY_MS = 250;
+
+export const claimPartialUpload = async (
+  assetRepository: AssetRepository,
+  assetId: string,
+  writerId: string,
+  waitMs: number,
+): Promise<boolean> => {
+  const deadline = Date.now() + waitMs;
+  while (!(await assetRepository.claimUpload(assetId, writerId))) {
+    if (Date.now() >= deadline || !(await assetRepository.hasPartialUpload(assetId))) {
+      return false;
+    }
+    await sleep(UPLOAD_CLAIM_RETRY_MS);
+  }
+  return true;
 };

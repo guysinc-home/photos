@@ -49,6 +49,7 @@ import { AssetMetadataAuditTable } from 'src/schema/tables/asset-metadata-audit.
 import { AssetMetadataTable } from 'src/schema/tables/asset-metadata.table.js';
 import { AssetOcrAuditTable } from 'src/schema/tables/asset-ocr-audit.table.js';
 import { AssetOcrTable } from 'src/schema/tables/asset-ocr.table.js';
+import { AssetUploadTable } from 'src/schema/tables/asset-upload.table.js';
 import { AssetTable } from 'src/schema/tables/asset.table.js';
 import { AuthChallengeTable } from 'src/schema/tables/auth-challenge.table.js';
 import { ClusterGroupRequestTable } from 'src/schema/tables/cluster-group-request.table.js';
@@ -118,6 +119,7 @@ export class ImmichDatabase {
     AssetFaceTable,
     AssetFaceAuditTable,
     AssetMetadataTable,
+    AssetUploadTable,
     AssetMetadataAuditTable,
     AssetJobStatusTable,
     AssetOcrTable,
@@ -235,6 +237,7 @@ export interface DB {
   asset_face_audit: AssetFaceAuditTable;
   asset_file: AssetFileTable;
   asset_metadata: AssetMetadataTable;
+  asset_upload: AssetUploadTable;
   asset_metadata_audit: AssetMetadataAuditTable;
   asset_job_status: AssetJobStatusTable;
   asset_ocr: AssetOcrTable;

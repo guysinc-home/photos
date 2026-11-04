@@ -1,6 +1,5 @@
 import { BadRequestException, Injectable, InternalServerErrorException } from '@nestjs/common';
 import { DateTime } from 'luxon';
-import { createHash } from 'node:crypto';
 import { dirname, extname, join } from 'node:path';
 import { Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -27,6 +26,7 @@ import {
   StorageFolder,
 } from 'src/enum.js';
 import { BaseService } from 'src/services/base.service.js';
+import { UPLOAD_CLAIM_WAIT_MS, claimPartialUpload } from 'src/utils/asset.util.js';
 import { isAssetChecksumConstraint } from 'src/utils/database.js';
 import { mimeTypes } from 'src/utils/mime-types.js';
 import { withRetry } from 'src/utils/misc.js';
@@ -34,7 +34,8 @@ import { withRetry } from 'src/utils/misc.js';
 export const MAX_RUFH_INTEROP_VERSION = 8;
 type CompletionData = { id: string; path: string; fileModifiedAt: Date; sharedLink?: AuthSharedLink };
 type ActiveRequest = { req: Readable; startTime: Date; settled: Promise<void> };
-type Received = { id: string; path: string; expected: Buffer; actual: Buffer; fileModifiedAt: Date };
+type Received = { id: string; path: string; expected: Buffer; fileModifiedAt: Date };
+const UPLOAD_CLAIM_HEARTBEAT_MS = 10_000;
 
 @Injectable()
 export class AssetUploadService extends BaseService {
@@ -63,6 +64,9 @@ export class AssetUploadService extends BaseService {
     const { uploadComplete, assetData, uploadLength, contentLength, version } = dto;
     const isComplete = uploadComplete !== false;
     const isResumable = version && uploadComplete !== undefined;
+    if (contentLength > uploadLength) {
+      return this.sendInconsistentLength(res);
+    }
     const { backup } = await this.getConfig({ withCache: true });
 
     const { id, path, status, isDuplicate } = await this.onStart(auth, dto);
@@ -89,34 +93,39 @@ export class AssetUploadService extends BaseService {
     }
 
     await this.runExclusive(id, req, async () => {
-      let writePath = path;
-      if (isDuplicate) {
-        const existingAsset = await this.assetRepository.getCompletionMetadata(id, auth.user.id);
-        if (existingAsset?.status !== AssetStatus.Partial) {
-          return this.sendAlreadyCompleted(res);
+      const claimed = await this.whileClaimed(id, req, async () => {
+        let writePath = path;
+        if (isDuplicate) {
+          const existingAsset = await this.assetRepository.getCompletionMetadata(id, auth.user.id);
+          if (existingAsset?.status !== AssetStatus.Partial) {
+            return this.sendAlreadyCompleted(res);
+          }
+          if (existingAsset.size !== uploadLength) {
+            return this.sendInconsistentLength(res);
+          }
+          writePath = existingAsset.path;
         }
-        writePath = existingAsset.path;
-      }
-      await this.storageRepository.mkdir(dirname(writePath));
+        await this.storageRepository.mkdir(dirname(writePath));
 
-      const writeStream = await this.storageRepository.createWriteStreamAt(writePath, 0, { flush: isComplete });
-      const checksum = await this.receive(req, writeStream, contentLength, isComplete);
-      if (isResumable) {
-        this.setCompleteHeader(res, version, uploadComplete);
-      }
-      if (!isComplete) {
-        res.status(201).set('Location', location).setHeader('Upload-Limit', this.getUploadLimits(backup)).send();
-        return;
-      }
+        const writeStream = await this.storageRepository.createWriteStreamAt(writePath, 0, {
+          flush: isComplete,
+          truncate: true,
+        });
+        await this.receive(req, writeStream, contentLength);
+        if (isResumable) {
+          this.setCompleteHeader(res, version, uploadComplete);
+        }
+        if (!isComplete) {
+          res.status(201).set('Location', location).setHeader('Upload-Limit', this.getUploadLimits(backup)).send();
+          return;
+        }
 
-      const received = {
-        id,
-        path: writePath,
-        expected: dto.checksum,
-        actual: checksum!,
-        fileModifiedAt: assetData.fileModifiedAt,
-      };
-      await this.finishUpload(auth, res, received);
+        const received = { id, path: writePath, expected: dto.checksum, fileModifiedAt: assetData.fileModifiedAt };
+        await this.finishUpload(auth, res, received);
+      });
+      if (!claimed) {
+        await this.sendUnclaimed(auth, res, id);
+      }
     });
   }
 
@@ -125,61 +134,64 @@ export class AssetUploadService extends BaseService {
     const { uploadComplete, uploadLength, uploadOffset, contentLength, version } = dto;
     this.setCompleteHeader(res, version, false);
     return this.runExclusive(id, req, async () => {
-      const completionData = await this.assetRepository.getCompletionMetadata(id, auth.user.id);
-      if (!completionData) {
-        res.status(404).send('Asset not found');
-        return;
-      }
-      const { fileModifiedAt, path, status, checksum: providedChecksum, size } = completionData;
-
-      if (status !== AssetStatus.Partial) {
-        return this.sendAlreadyCompleted(res);
-      }
-
-      if (uploadLength && size && size !== uploadLength) {
-        return this.sendInconsistentLength(res);
-      }
-
-      const expectedOffset = await this.getCurrentOffset(path);
-      if (expectedOffset !== uploadOffset) {
-        return this.sendOffsetMismatch(res, expectedOffset, uploadOffset);
-      }
-
-      const newLength = uploadOffset + contentLength;
-      if (uploadLength !== undefined && newLength > uploadLength) {
-        res.status(400).send('Upload would exceed declared length');
-        return;
-      }
-
-      if (contentLength === 0 && !uploadComplete) {
-        res.status(204).setHeader('Upload-Offset', expectedOffset.toString()).send();
-        return;
-      }
-
-      const writeStream = await this.storageRepository.createWriteStreamAt(path, uploadOffset, {
-        flush: uploadComplete,
-      });
-      await this.receive(req, writeStream, contentLength, false);
-      this.setCompleteHeader(res, version, uploadComplete);
-      if (!uploadComplete) {
-        try {
-          const offset = await this.getCurrentOffset(path);
-          res.status(204).setHeader('Upload-Offset', offset.toString()).send();
-        } catch {
-          this.logger.error(`Failed to get current offset for ${path} after write`);
-          res.status(500).send();
+      const claimed = await this.whileClaimed(id, req, async () => {
+        const completionData = await this.assetRepository.getCompletionMetadata(id, auth.user.id);
+        if (!completionData) {
+          res.status(404).send('Asset not found');
+          return;
         }
-        return;
-      }
+        const { fileModifiedAt, path, status, checksum: providedChecksum, size: declaredLength } = completionData;
 
-      const checksum = await this.cryptoRepository.hashFile(path);
-      await this.finishUpload(auth, res, { id, path, expected: providedChecksum, actual: checksum, fileModifiedAt });
+        if (status !== AssetStatus.Partial) {
+          return this.sendAlreadyCompleted(res);
+        }
+
+        if (declaredLength === null || (uploadLength !== undefined && uploadLength !== declaredLength)) {
+          return this.sendInconsistentLength(res);
+        }
+
+        const expectedOffset = await this.getCurrentOffset(path);
+        if (expectedOffset !== uploadOffset) {
+          return this.sendOffsetMismatch(res, expectedOffset, uploadOffset);
+        }
+
+        const newLength = uploadOffset + contentLength;
+        if (newLength > declaredLength || (uploadComplete && newLength !== declaredLength)) {
+          return this.sendInconsistentLength(res);
+        }
+
+        if (contentLength === 0 && !uploadComplete) {
+          res.status(204).setHeader('Upload-Offset', expectedOffset.toString()).send();
+          return;
+        }
+
+        const writeStream = await this.storageRepository.createWriteStreamAt(path, uploadOffset, {
+          flush: uploadComplete,
+        });
+        await this.receive(req, writeStream, contentLength);
+        this.setCompleteHeader(res, version, uploadComplete);
+        if (!uploadComplete) {
+          try {
+            const offset = await this.getCurrentOffset(path);
+            res.status(204).setHeader('Upload-Offset', offset.toString()).send();
+          } catch {
+            this.logger.error(`Failed to get current offset for ${path} after write`);
+            res.status(500).send();
+          }
+          return;
+        }
+
+        await this.finishUpload(auth, res, { id, path, expected: providedChecksum, fileModifiedAt });
+      });
+      if (!claimed) {
+        await this.sendUnclaimed(auth, res, id);
+      }
     });
   }
 
   async cancelUpload(auth: AuthDto, assetId: string, res: Response): Promise<void> {
     await this.settleExistingRequest(assetId);
-    return this.databaseRepository.withUuidLock(assetId, async () => {
+    const claimed = await this.whileClaimed(assetId, undefined, async () => {
       const asset = await this.assetRepository.getCompletionMetadata(assetId, auth.user.id);
       if (!asset) {
         res.status(404).send('Asset not found');
@@ -191,6 +203,9 @@ export class AssetUploadService extends BaseService {
       await this.onCancel(assetId, asset.path);
       res.status(204).send();
     });
+    if (!claimed) {
+      await this.sendUnclaimed(auth, res, assetId);
+    }
   }
 
   async getUploadStatus(auth: AuthDto, res: Response, id: string, { version }: GetUploadStatusDto): Promise<void> {
@@ -242,23 +257,25 @@ export class AssetUploadService extends BaseService {
 
   @OnJob({ name: JobName.PartialAssetCleanup, queue: QueueName.BackgroundTask })
   async removeStaleUpload({ id }: JobOf<JobName.PartialAssetCleanup>): Promise<JobStatus> {
-    const asset = await this.assetJobRepository.getForPartialAssetCleanupJob(id);
-    if (!asset) {
-      return JobStatus.Skipped;
-    }
-    const isComplete = await this.isUploadedFileComplete(asset);
-    return this.databaseRepository.withUuidLock(id, async () => {
-      const current = await this.assetJobRepository.getForPartialAssetCleanupJob(id);
-      if (!current) {
-        return JobStatus.Skipped;
-      }
-      if (isComplete) {
-        await this.onComplete({ id, path: current.path, fileModifiedAt: current.fileModifiedAt });
-        return JobStatus.Success;
-      }
-      await this.onCancel(id, current.path);
-      return JobStatus.Success;
-    });
+    let status = JobStatus.Skipped;
+    await this.whileClaimed(
+      id,
+      undefined,
+      async () => {
+        const asset = await this.assetJobRepository.getForPartialAssetCleanupJob(id);
+        if (!asset) {
+          return;
+        }
+        if (await this.isUploadedFileComplete(asset)) {
+          await this.onComplete({ id, path: asset.path, fileModifiedAt: asset.fileModifiedAt });
+        } else {
+          await this.onCancel(id, asset.path);
+        }
+        status = JobStatus.Success;
+      },
+      0,
+    );
+    return status;
   }
 
   private async isUploadedFileComplete({
@@ -316,6 +333,7 @@ export class AssetUploadService extends BaseService {
         },
         uploadLength,
         assetData.iCloudId ? [{ key: AssetMetadataKey.MobileApp, value: { iCloudId: assetData.iCloudId } }] : undefined,
+        { sessionId: auth.session?.id, apiKeyId: auth.apiKey?.id, sharedLinkId: auth.sharedLink?.id },
       );
     } catch (error: any) {
       if (!isAssetChecksumConstraint(error)) {
@@ -358,23 +376,68 @@ export class AssetUploadService extends BaseService {
     await withRetry(() => this.assetRepository.removeAndDecrementQuota(assetId));
   }
 
-  private async finishUpload(auth: AuthDto, res: Response, { id, path, expected, actual, fileModifiedAt }: Received) {
-    await this.databaseRepository.withUuidLock(id, async () => {
-      const asset = await this.assetRepository.getCompletionMetadata(id, auth.user.id);
-      if (!asset) {
-        res.status(404).send('Asset not found');
-        return;
-      }
-      if (asset.status !== AssetStatus.Partial) {
-        return this.sendAlreadyCompleted(res);
-      }
-      if (expected.compare(actual) !== 0) {
-        return await this.sendChecksumMismatch(res, id, path);
-      }
+  private async finishUpload(auth: AuthDto, res: Response, { id, path, expected, fileModifiedAt }: Received) {
+    const asset = await this.assetRepository.getCompletionMetadata(id, auth.user.id);
+    if (!asset) {
+      res.status(404).send('Asset not found');
+      return;
+    }
+    if (asset.status !== AssetStatus.Partial) {
+      return this.sendAlreadyCompleted(res);
+    }
 
-      await this.onComplete({ id, path, fileModifiedAt, sharedLink: auth.sharedLink });
-      res.status(200).send({ id });
-    });
+    const { size } = await this.storageRepository.stat(path);
+    if (size !== asset.size) {
+      this.logger.warn(`Removing upload asset ${id}: ${size} bytes written, ${asset.size} declared`);
+      await this.onCancel(id, path);
+      return this.sendInconsistentLength(res);
+    }
+
+    const actual = await this.cryptoRepository.hashFile(path);
+    if (!expected.equals(actual)) {
+      return await this.sendChecksumMismatch(res, id, path);
+    }
+
+    await this.onComplete({ id, path, fileModifiedAt, sharedLink: auth.sharedLink });
+    res.status(200).send({ id });
+  }
+
+  private async whileClaimed(
+    assetId: string,
+    req: Readable | undefined,
+    handler: () => Promise<void>,
+    waitMs = UPLOAD_CLAIM_WAIT_MS,
+  ): Promise<boolean> {
+    const writerId = this.cryptoRepository.randomUUID();
+    if (!(await claimPartialUpload(this.assetRepository, assetId, writerId, waitMs))) {
+      return false;
+    }
+
+    const heartbeat = setInterval(() => {
+      this.assetRepository
+        .refreshUploadClaim(assetId, writerId)
+        .then((held) => held || req?.destroy())
+        .catch(() => req?.destroy());
+    }, UPLOAD_CLAIM_HEARTBEAT_MS);
+    try {
+      await handler();
+    } finally {
+      clearInterval(heartbeat);
+      await this.assetRepository.releaseUploadClaim(assetId, writerId);
+    }
+    return true;
+  }
+
+  private async sendUnclaimed(auth: AuthDto, res: Response, id: string) {
+    const asset = await this.assetRepository.getCompletionMetadata(id, auth.user.id);
+    if (!asset) {
+      res.status(404).send('Asset not found');
+      return;
+    }
+    if (asset.status !== AssetStatus.Partial) {
+      return this.sendAlreadyCompleted(res);
+    }
+    res.status(503).setHeader('Retry-After', '5').send('Upload is busy with another request');
   }
 
   private async runExclusive(assetId: string, req: Readable, handler: () => Promise<void>): Promise<void> {
@@ -410,13 +473,15 @@ export class AssetUploadService extends BaseService {
     }
   }
 
-  private async receive(req: Readable, writeStream: Writable, size: number, withChecksum: boolean) {
-    const hash = withChecksum ? createHash('sha1') : undefined;
+  private async receive(req: Readable, writeStream: Writable, size: number) {
     let receivedLength = 0;
     const counter = new Transform({
       transform(chunk: Buffer, _encoding, callback) {
         receivedLength += chunk.length;
-        hash?.update(chunk);
+        if (receivedLength > size) {
+          callback(new Error('Request body is longer than Content-Length'));
+          return;
+        }
         callback(null, chunk);
       },
     });
@@ -430,7 +495,6 @@ export class AssetUploadService extends BaseService {
     if (receivedLength < size) {
       throw new Error('Request closed before all data received');
     }
-    return hash?.digest();
   }
 
   private sendInterimResponse({ socket }: Response, location: string, interopVersion: number, limits: string): void {

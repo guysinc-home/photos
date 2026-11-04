@@ -13,6 +13,9 @@ describe(AssetUploadService.name, () => {
   beforeEach(() => {
     ({ sut, mocks } = newTestService(AssetUploadService));
     mocks.asset.setComplete.mockResolvedValue({ id: factory.uuid() } as any);
+    mocks.asset.claimUpload.mockResolvedValue(true);
+    mocks.asset.hasPartialUpload.mockResolvedValue(true);
+    mocks.asset.releaseUploadClaim.mockResolvedValue();
   });
 
   describe('onStart', () => {
@@ -62,6 +65,7 @@ describe(AssetUploadService.name, () => {
         }),
         1024,
         undefined,
+        { sessionId: authStub.user1.session?.id, apiKeyId: undefined, sharedLinkId: undefined },
       );
     });
 
@@ -77,6 +81,7 @@ describe(AssetUploadService.name, () => {
         }),
         expect.anything(),
         undefined,
+        expect.anything(),
       );
     });
 
@@ -188,9 +193,12 @@ describe(AssetUploadService.name, () => {
 
       await sut.onStart(authStub.user1, dtoWithICloud);
 
-      expect(mocks.asset.createWithMetadata).toHaveBeenCalledWith(expect.anything(), expect.anything(), [
-        { key: AssetMetadataKey.MobileApp, value: { iCloudId: 'icloud-123' } },
-      ]);
+      expect(mocks.asset.createWithMetadata).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        [{ key: AssetMetadataKey.MobileApp, value: { iCloudId: 'icloud-123' } }],
+        expect.anything(),
+      );
     });
 
     it('should set isFavorite when true', async () => {
@@ -212,6 +220,7 @@ describe(AssetUploadService.name, () => {
         }),
         expect.anything(),
         undefined,
+        expect.anything(),
       );
     });
   });
@@ -349,6 +358,31 @@ describe(AssetUploadService.name, () => {
   describe('removeStaleUpload', () => {
     const assetId = factory.uuid();
     const path = `/upload/${assetId}/file.jpg`;
+
+    it('should skip an upload another request is writing to', async () => {
+      mocks.asset.claimUpload.mockResolvedValue(false);
+
+      await expect(sut.removeStaleUpload({ id: assetId })).resolves.toBe(JobStatus.Skipped);
+
+      expect(mocks.asset.claimUpload).toHaveBeenCalledTimes(1);
+      expect(mocks.storage.unlink).not.toHaveBeenCalled();
+      expect(mocks.asset.removeAndDecrementQuota).not.toHaveBeenCalled();
+    });
+
+    it('should release its claim after cleaning up', async () => {
+      mocks.assetJob.getForPartialAssetCleanupJob.mockResolvedValue({
+        path,
+        checksum: Buffer.from('checksum'),
+        fileModifiedAt: new Date(),
+        size: 1024,
+      });
+      mocks.storage.stat.mockResolvedValue({ size: 512 } as any);
+
+      await sut.removeStaleUpload({ id: assetId });
+
+      const [, writerId] = mocks.asset.claimUpload.mock.calls[0];
+      expect(mocks.asset.releaseUploadClaim).toHaveBeenCalledWith(assetId, writerId);
+    });
 
     it('should skip if asset not found', async () => {
       mocks.assetJob.getForPartialAssetCleanupJob.mockResolvedValue(undefined);
