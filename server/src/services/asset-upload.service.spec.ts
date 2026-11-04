@@ -6,6 +6,12 @@ import { authStub } from 'test/fixtures/auth.stub.js';
 import { factory } from 'test/small.factory.js';
 import { ServiceMocks, newTestService } from 'test/utils.js';
 
+const getUploadLimit = async (sut: AssetUploadService) => {
+  const res = { status: vi.fn().mockReturnThis(), setHeader: vi.fn().mockReturnThis(), send: vi.fn() };
+  await sut.getUploadOptions(res as any);
+  return res.setHeader.mock.calls.find(([name]) => name === 'Upload-Limit')?.[1];
+};
+
 describe(AssetUploadService.name, () => {
   let sut: AssetUploadService;
   let mocks: ServiceMocks;
@@ -292,6 +298,26 @@ describe(AssetUploadService.name, () => {
       await sut.onCancel(assetId, path);
 
       expect(mocks.asset.removeAndDecrementQuota).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('getUploadOptions', () => {
+    it('should advertise a 90 MiB max-append-size by default', async () => {
+      mocks.systemMetadata.get.mockResolvedValue({});
+
+      await expect(getUploadLimit(sut)).resolves.toBe('min-size=1, max-age=259200, max-append-size=94371840');
+    });
+
+    it('should advertise a configured max-append-size', async () => {
+      mocks.systemMetadata.get.mockResolvedValue({ backup: { upload: { maxAppendSizeBytes: 50_000_000 } } });
+
+      await expect(getUploadLimit(sut)).resolves.toBe('min-size=1, max-age=259200, max-append-size=50000000');
+    });
+
+    it('should not advertise max-append-size when it is 0', async () => {
+      mocks.systemMetadata.get.mockResolvedValue({ backup: { upload: { maxAppendSizeBytes: 0 } } });
+
+      await expect(getUploadLimit(sut)).resolves.toBe('min-size=1, max-age=259200');
     });
   });
 

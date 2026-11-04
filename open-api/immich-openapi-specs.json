@@ -20472,10 +20472,17 @@
             "maximum": 9007199254740991,
             "minimum": 1,
             "type": "integer"
+          },
+          "maxAppendSizeBytes": {
+            "description": "Largest request body, in bytes, that resumable upload clients are told to send (Upload-Limit max-append-size). 0 advertises no limit",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [
-          "maxAgeHours"
+          "maxAgeHours",
+          "maxAppendSizeBytes"
         ],
         "type": "object"
       },

@@ -174,6 +174,12 @@ const AdminConfigSchemaWithVisibility = z
         upload: z
           .object({
             maxAgeHours: z.int().min(1).describe('Max age in hours'),
+            maxAppendSizeBytes: z
+              .int()
+              .min(0)
+              .describe(
+                'Largest request body, in bytes, that resumable upload clients are told to send (Upload-Limit max-append-size). 0 advertises no limit',
+              ),
           })
           .meta({ id: 'AdminConfigUploadBackupDto' }),
       })
@@ -599,6 +605,7 @@ export const defaults = Object.freeze<SystemConfig>({
     },
     upload: {
       maxAgeHours: 72,
+      maxAppendSizeBytes: 90 * 1024 * 1024,
     },
   },
   ffmpeg: {
