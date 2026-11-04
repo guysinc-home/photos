@@ -65,6 +65,8 @@ export type AdminConfigDatabaseBackupDto = {
 export type AdminConfigUploadBackupDto = {
     /** Max age in hours */
     maxAgeHours: number;
+    /** Largest request body, in bytes, that resumable upload clients are told to send (Upload-Limit max-append-size). 0 advertises no limit */
+    maxAppendSizeBytes: number;
 };
 export type AdminConfigBackupsDto = {
     /** Whether the backups feature is enabled */

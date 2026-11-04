@@ -570,6 +570,7 @@ export class AssetUploadService extends BaseService {
   }
 
   private getUploadLimits({ upload }: SystemConfig['backup']) {
-    return `min-size=1, max-age=${upload.maxAgeHours * 3600}`;
+    const limits = `min-size=1, max-age=${upload.maxAgeHours * 3600}`;
+    return upload.maxAppendSizeBytes > 0 ? `${limits}, max-append-size=${upload.maxAppendSizeBytes}` : limits;
   }
 }
