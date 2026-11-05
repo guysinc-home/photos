@@ -55,6 +55,8 @@ const updatedConfig = Object.freeze<SystemConfig>({
     },
     upload: {
       maxAgeHours: 72,
+      maxAppendSizeBytes: 94_371_840,
+      maxPartialUploads: 20,
     },
   },
   ffmpeg: {

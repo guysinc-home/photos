@@ -125,6 +125,16 @@ where
 returning
   "asset_upload"."assetId"
 
+-- AssetRepository.countPartialUploads
+select
+  count(*) as "count"
+from
+  "asset"
+where
+  "ownerId" = $1
+  and "status" = 'partial'
+  and "createdAt" > $2
+
 -- AssetRepository.hasPartialUpload
 select
   "id"

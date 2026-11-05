@@ -34,6 +34,10 @@ const asJobItem = (dto: JobCreateDto): JobItem => {
       return { name: JobName.DatabaseBackup };
     }
 
+    case ManualJobName.UploadCleanup: {
+      return { name: JobName.PartialAssetCleanupQueueAll };
+    }
+
     case ManualJobName.IntegrityMissingFiles: {
       return { name: JobName.IntegrityMissingFilesQueueAll };
     }

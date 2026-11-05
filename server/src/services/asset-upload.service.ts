@@ -1,4 +1,10 @@
-import { BadRequestException, Injectable, InternalServerErrorException } from '@nestjs/common';
+import {
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { DateTime } from 'luxon';
 import { dirname, extname, join } from 'node:path';
 import { Readable, Transform, Writable } from 'node:stream';
@@ -68,8 +74,16 @@ export class AssetUploadService extends BaseService {
       return this.sendInconsistentLength(res);
     }
     const { backup } = await this.getConfig({ withCache: true });
+    if (this.exceedsAppendLimit(contentLength, backup)) {
+      return this.sendAppendTooLarge(res, backup);
+    }
 
-    const { id, path, status, isDuplicate } = await this.onStart(auth, dto);
+    let started = await this.onStart(auth, dto);
+    if (started.isDuplicate && started.status === AssetStatus.Partial && this.isExpired(started.createdAt, backup)) {
+      await this.removeExpiredUpload(started.id);
+      started = await this.onStart(auth, dto);
+    }
+    const { id, path, status, isDuplicate } = started;
     const location = `/api/upload/${id}`;
     if (isDuplicate) {
       if (status !== AssetStatus.Partial) {
@@ -129,10 +143,14 @@ export class AssetUploadService extends BaseService {
     });
   }
 
-  resumeUpload(auth: AuthDto, req: Readable, res: Response, id: string, dto: ResumeUploadDto): Promise<void> {
+  async resumeUpload(auth: AuthDto, req: Readable, res: Response, id: string, dto: ResumeUploadDto): Promise<void> {
     this.logger.verboseFn(() => `Resuming upload for ${id}: ${JSON.stringify(dto)}`);
     const { uploadComplete, uploadLength, uploadOffset, contentLength, version } = dto;
     this.setCompleteHeader(res, version, false);
+    const { backup } = await this.getConfig({ withCache: true });
+    if (this.exceedsAppendLimit(contentLength, backup)) {
+      return this.sendAppendTooLarge(res, backup);
+    }
     return this.runExclusive(id, req, async () => {
       const claimed = await this.whileClaimed(id, req, async () => {
         const completionData = await this.assetRepository.getCompletionMetadata(id, auth.user.id);
@@ -144,6 +162,11 @@ export class AssetUploadService extends BaseService {
 
         if (status !== AssetStatus.Partial) {
           return this.sendAlreadyCompleted(res);
+        }
+
+        if (this.isExpired(completionData.createdAt, backup)) {
+          res.status(404).send('Upload has expired');
+          return;
         }
 
         if (declaredLength === null || (uploadLength !== undefined && uploadLength !== declaredLength)) {
@@ -217,6 +240,10 @@ export class AssetUploadService extends BaseService {
       res.status(404).send('Asset not found');
       return;
     }
+    if (asset.status === AssetStatus.Partial && this.isExpired(asset.createdAt, backup)) {
+      res.status(404).send('Upload has expired');
+      return;
+    }
 
     const offset = await this.getCurrentOffset(asset.path);
     this.setCompleteHeader(res, version, asset.status !== AssetStatus.Partial);
@@ -225,7 +252,7 @@ export class AssetUploadService extends BaseService {
     if (size !== null && size > 0) {
       res.setHeader('Upload-Length', size.toString());
     }
-    res.setHeader('Upload-Limit', this.getUploadLimits(backup)).send();
+    res.setHeader('Upload-Limit', this.getUploadLimits(backup, asset.createdAt)).send();
   }
 
   async getUploadOptions(res: Response): Promise<void> {
@@ -299,7 +326,7 @@ export class AssetUploadService extends BaseService {
   async onStart(
     auth: AuthDto,
     { assetData, checksum, uploadLength }: StartUploadDto,
-  ): Promise<{ id: string; path: string; status: AssetStatus; isDuplicate: boolean }> {
+  ): Promise<{ id: string; path: string; status: AssetStatus; createdAt: Date; isDuplicate: boolean }> {
     const assetId = this.cryptoRepository.randomUUID();
     const folder = StorageCore.getNestedFolder(StorageFolder.Upload, auth.user.id, assetId);
     const extension = extname(assetData.filename);
@@ -311,6 +338,12 @@ export class AssetUploadService extends BaseService {
     }
 
     this.validateQuota(auth, uploadLength);
+
+    const existing = await this.assetRepository.getUploadAssetIdByChecksum(auth.user.id, checksum);
+    if (existing) {
+      return { id: existing.id, path, status: existing.status, createdAt: existing.createdAt, isDuplicate: true };
+    }
+    await this.validatePartialUploadCount(auth);
 
     try {
       await this.assetRepository.createWithMetadata(
@@ -346,10 +379,10 @@ export class AssetUploadService extends BaseService {
         throw new InternalServerErrorException('Error locating duplicate for checksum constraint');
       }
 
-      return { id: duplicate.id, path, status: duplicate.status, isDuplicate: true };
+      return { id: duplicate.id, path, status: duplicate.status, createdAt: duplicate.createdAt, isDuplicate: true };
     }
 
-    return { id: assetId, path, status: AssetStatus.Partial, isDuplicate: false };
+    return { id: assetId, path, status: AssetStatus.Partial, createdAt: new Date(), isDuplicate: false };
   }
 
   async onComplete({ id, path, fileModifiedAt, sharedLink }: CompletionData) {
@@ -538,6 +571,51 @@ export class AssetUploadService extends BaseService {
     return this.onCancel(assetId, path);
   }
 
+  private async validatePartialUploadCount(auth: AuthDto) {
+    const { backup } = await this.getConfig({ withCache: true });
+    const { maxPartialUploads, maxAgeHours } = backup.upload;
+    if (maxPartialUploads === 0) {
+      return;
+    }
+
+    const createdAfter = DateTime.now().minus({ hours: maxAgeHours }).toJSDate();
+    const count = await this.assetRepository.countPartialUploads(auth.user.id, createdAfter);
+    if (count >= maxPartialUploads) {
+      throw new HttpException(
+        `Too many unfinished uploads: finish or cancel one of ${count} first`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+  }
+
+  private async removeExpiredUpload(id: string) {
+    await this.whileClaimed(id, undefined, async () => {
+      const asset = await this.assetJobRepository.getForPartialAssetCleanupJob(id);
+      if (asset) {
+        await this.onCancel(id, asset.path);
+      }
+    });
+  }
+
+  private isExpired(createdAt: Date, { upload }: SystemConfig['backup']) {
+    return Date.now() >= createdAt.getTime() + upload.maxAgeHours * 3_600_000;
+  }
+
+  private exceedsAppendLimit(contentLength: number, { upload }: SystemConfig['backup']) {
+    return upload.maxAppendSizeBytes > 0 && contentLength > upload.maxAppendSizeBytes;
+  }
+
+  private sendAppendTooLarge(res: Response, backup: SystemConfig['backup']): void {
+    res
+      .status(413)
+      .setHeader('Upload-Limit', this.getUploadLimits(backup))
+      .contentType('application/problem+json')
+      .send({
+        title: 'request content is larger than max-append-size',
+        'max-append-size': backup.upload.maxAppendSizeBytes,
+      });
+  }
+
   private validateQuota(auth: AuthDto, size: number): void {
     const { quotaSizeInBytes: quotaLimit, quotaUsageInBytes: currentUsage } = auth.user;
     if (quotaLimit === null) {
@@ -569,7 +647,10 @@ export class AssetUploadService extends BaseService {
     }
   }
 
-  private getUploadLimits({ upload }: SystemConfig['backup']) {
-    return `min-size=1, max-age=${upload.maxAgeHours * 3600}`;
+  private getUploadLimits({ upload }: SystemConfig['backup'], createdAt?: Date) {
+    const maxAge = upload.maxAgeHours * 3600;
+    const remaining = createdAt ? Math.max(0, Math.floor((createdAt.getTime() - Date.now()) / 1000) + maxAge) : maxAge;
+    const limits = `min-size=1, max-age=${remaining}`;
+    return upload.maxAppendSizeBytes > 0 ? `${limits}, max-append-size=${upload.maxAppendSizeBytes}` : limits;
   }
 }

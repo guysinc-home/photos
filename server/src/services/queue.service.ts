@@ -293,6 +293,10 @@ export class QueueService extends BaseService {
       jobs.push({ name: JobName.AssetGenerateThumbnailsQueueAll, data: { force: false } });
     }
 
+    if (config.nightlyTasks.removeStaleUploads) {
+      jobs.push({ name: JobName.PartialAssetCleanupQueueAll });
+    }
+
     if (config.nightlyTasks.clusterNewFaces) {
       jobs.push({ name: JobName.FacialRecognitionQueueAll, data: { force: false, nightly: true } });
     }

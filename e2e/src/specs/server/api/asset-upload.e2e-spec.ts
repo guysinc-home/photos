@@ -1,4 +1,4 @@
-import { AssetVisibility, getMyUser, LoginResponseDto } from '@immich/sdk';
+import { AssetVisibility, getConfig, getMyUser, LoginResponseDto, updateConfig } from '@immich/sdk';
 import { createHash, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
@@ -42,6 +42,13 @@ describe('/upload', () => {
     cancelQuotaUser = await utils.userSetup(admin.accessToken, createUserDto.user2);
     quotaUser = await utils.userSetup(admin.accessToken, createUserDto.userQuota);
     assetData = makeAssetData();
+
+    const config = await getConfig({ headers: asBearerAuth(admin.accessToken) });
+    const upload = { ...config.backup.upload, maxPartialUploads: 0 };
+    await updateConfig(
+      { adminConfigDto: { ...config, backup: { ...config.backup, upload } } },
+      { headers: asBearerAuth(admin.accessToken) },
+    );
   });
 
   afterAll(() => {
@@ -1102,7 +1109,7 @@ describe('/upload', () => {
       expect(headers['upload-offset']).toBe('512');
       expect(headers['upload-complete']).toBe('?0');
       expect(headers['upload-length']).toBe('512');
-      expect(headers['upload-limit']).toEqual('min-size=1, max-age=259200');
+      expect(headers['upload-limit']).toMatch(/^min-size=1, max-age=25919\d, max-append-size=94371840$/);
       expect(headers['cache-control']).toBe('no-store');
     });
 
@@ -1122,7 +1129,27 @@ describe('/upload', () => {
 
       expect(status).toBe(204);
       expect(headers['accept-patch']).toBe('application/partial-upload');
-      expect(headers['upload-limit']).toEqual('min-size=1, max-age=259200');
+      expect(headers['upload-limit']).toEqual('min-size=1, max-age=259200, max-append-size=94371840');
+    });
+
+    it('should advertise the configured max-append-size', async () => {
+      const config = await getConfig({ headers: asBearerAuth(admin.accessToken) });
+      const withLimit = (maxAppendSizeBytes: number) => ({
+        ...config,
+        backup: { ...config.backup, upload: { ...config.backup.upload, maxAppendSizeBytes } },
+      });
+
+      try {
+        await updateConfig({ adminConfigDto: withLimit(50_000_000) }, { headers: asBearerAuth(admin.accessToken) });
+        const limited = await request(app).options('/upload');
+        expect(limited.headers['upload-limit']).toEqual('min-size=1, max-age=259200, max-append-size=50000000');
+
+        await updateConfig({ adminConfigDto: withLimit(0) }, { headers: asBearerAuth(admin.accessToken) });
+        const unlimited = await request(app).options('/upload');
+        expect(unlimited.headers['upload-limit']).toEqual('min-size=1, max-age=259200');
+      } finally {
+        await utils.resetAdminConfig(admin.accessToken);
+      }
     });
   });
 });

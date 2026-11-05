@@ -479,6 +479,7 @@ export enum ManualJobName {
   MemoryCleanup = 'memory-cleanup',
   MemoryCreate = 'memory-create',
   BackupDatabase = 'backup-database',
+  UploadCleanup = 'upload-cleanup',
   IntegrityMissingFiles = `integrity-missing-files`,
   IntegrityUntrackedFiles = `integrity-untracked-files`,
   IntegrityChecksumFiles = `integrity-checksum-mismatch`,
