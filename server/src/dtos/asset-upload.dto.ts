@@ -16,8 +16,8 @@ export enum Header {
 }
 
 const UploadAssetDataSchema = z.object({
-  deviceAssetId: z.string().min(1),
-  deviceId: z.string().min(1),
+  deviceAssetId: z.string().min(1).optional(),
+  deviceId: z.string().min(1).optional(),
   fileCreatedAt: isoDatetimeToDate,
   fileModifiedAt: isoDatetimeToDate,
   filename: z.string().min(1),

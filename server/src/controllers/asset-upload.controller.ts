@@ -41,8 +41,8 @@ export class AssetUploadController {
   @ApiHeader({
     name: ImmichHeader.AssetData,
     description: `RFC 9651 structured dictionary containing asset metadata with the following keys:
-- device-asset-id (string, required): Unique device asset identifier
-- device-id (string, required): Device identifier
+- device-asset-id (string, optional, ignored): Accepted for compatibility with older clients
+- device-id (string, optional, ignored): Accepted for compatibility with older clients
 - file-created-at (string/date, required): ISO 8601 date string or Unix timestamp
 - file-modified-at (string/date, required): ISO 8601 date string or Unix timestamp
 - filename (string, required): Original filename
@@ -50,8 +50,7 @@ export class AssetUploadController {
 - live-photo-video-id (string, optional): Live photo ID for assets from iOS devices
 - icloud-id (string, optional): iCloud identifier for assets from iOS devices`,
     required: true,
-    example:
-      'device-asset-id="abc123", device-id="phone1", filename="photo.jpg", file-created-at="2024-01-01T00:00:00Z", file-modified-at="2024-01-01T00:00:00Z"',
+    example: 'filename="photo.jpg", file-created-at="2024-01-01T00:00:00Z", file-modified-at="2024-01-01T00:00:00Z"',
   })
   @ApiHeader({
     name: Header.ReprDigest,

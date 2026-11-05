@@ -154,54 +154,41 @@ describe(AssetUploadController.name, () => {
       expectValidationIssue(body, ['repr-digest'], 'Invalid repr-digest header');
     });
 
-    it('should validate device-asset-id is required in asset data', async () => {
+    it('should accept asset data without device-asset-id and device-id', async () => {
       const assetData = serializeDictionary({
         filename: 'test.jpg',
-        'device-id': 'test-device',
         'file-created-at': new Date().toISOString(),
         'file-modified-at': new Date().toISOString(),
       });
 
-      const { status, body } = await request(ctx.getHttpServer())
+      const { status } = await request(ctx.getHttpServer())
         .post('/upload')
         .set('Upload-Draft-Interop-Version', '8')
         .set('X-Immich-Asset-Data', assetData)
         .set('Repr-Digest', checksum)
         .set('Upload-Complete', '?1')
-        .set('Upload-Length', '1024')
+        .set('Upload-Length', buffer.length.toString())
         .send(buffer);
 
-      expect(status).toBe(400);
-      expectValidationIssue(
-        body,
-        ['x-immich-asset-data', 'deviceAssetId'],
-        'Invalid input: expected string, received undefined',
-      );
+      expect(status).toBe(201);
+      const dto = service.startUpload.mock.calls[0][3];
+      expect(dto.assetData).toEqual(expect.objectContaining({ filename: 'test.jpg' }));
+      expect(dto.assetData.deviceAssetId).toBeUndefined();
+      expect(dto.assetData.deviceId).toBeUndefined();
     });
 
-    it('should validate device-id is required in asset data', async () => {
-      const assetData = serializeDictionary({
-        filename: 'test.jpg',
-        'device-asset-id': 'test-asset',
-        'file-created-at': new Date().toISOString(),
-        'file-modified-at': new Date().toISOString(),
-      });
-
-      const { status, body } = await request(ctx.getHttpServer())
+    it('should still accept device-asset-id and device-id from older clients', async () => {
+      const { status } = await request(ctx.getHttpServer())
         .post('/upload')
         .set('Upload-Draft-Interop-Version', '8')
-        .set('X-Immich-Asset-Data', assetData)
+        .set('X-Immich-Asset-Data', makeAssetData())
         .set('Repr-Digest', checksum)
         .set('Upload-Complete', '?1')
-        .set('Upload-Length', '1024')
+        .set('Upload-Length', buffer.length.toString())
         .send(buffer);
 
-      expect(status).toBe(400);
-      expectValidationIssue(
-        body,
-        ['x-immich-asset-data', 'deviceId'],
-        'Invalid input: expected string, received undefined',
-      );
+      expect(status).toBe(201);
+      expect(service.startUpload).toHaveBeenCalled();
     });
 
     it('should validate filename is required in asset data', async () => {

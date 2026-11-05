@@ -101,6 +101,58 @@ where
   and "key" = $2
 commit
 
+-- AssetRepository.claimUpload
+insert into
+  "asset_upload" ("assetId", "writerId", "writerHeartbeatAt")
+select
+  "asset"."id",
+  $1 as "writerId",
+  clock_timestamp() as "writerHeartbeatAt"
+from
+  "asset"
+where
+  "asset"."id" = $2
+  and "asset"."status" = 'partial'
+on conflict ("assetId") do update
+set
+  "writerId" = "excluded"."writerId",
+  "writerHeartbeatAt" = "excluded"."writerHeartbeatAt"
+where
+  (
+    "asset_upload"."writerId" is null
+    or "asset_upload"."writerHeartbeatAt" < clock_timestamp() - $3::interval
+  )
+returning
+  "asset_upload"."assetId"
+
+-- AssetRepository.hasPartialUpload
+select
+  "id"
+from
+  "asset"
+where
+  "id" = $1
+  and "status" = 'partial'
+
+-- AssetRepository.refreshUploadClaim
+update "asset_upload"
+set
+  "writerHeartbeatAt" = clock_timestamp()
+where
+  "assetId" = $1
+  and "writerId" = $2
+returning
+  "assetId"
+
+-- AssetRepository.releaseUploadClaim
+update "asset_upload"
+set
+  "writerId" = $1,
+  "writerHeartbeatAt" = $2
+where
+  "assetId" = $3
+  and "writerId" = $4
+
 -- AssetRepository.getCompletionMetadata
 select
   "originalPath" as "path",
@@ -140,6 +192,60 @@ with
       and "status" = 'partial'
     returning
       *
+  ),
+  "resynced_exif" as (
+    update "asset_exif"
+    set
+      "updatedAt" = clock_timestamp()
+    where
+      "assetId" in (
+        select
+          "completed_asset"."id"
+        from
+          "completed_asset"
+      )
+    returning
+      "asset_exif"."assetId"
+  ),
+  "resynced_metadata" as (
+    update "asset_metadata"
+    set
+      "updatedAt" = clock_timestamp()
+    where
+      "assetId" in (
+        select
+          "completed_asset"."id"
+        from
+          "completed_asset"
+      )
+    returning
+      "asset_metadata"."assetId"
+  ),
+  "resynced_album_asset" as (
+    update "album_asset"
+    set
+      "updatedAt" = clock_timestamp()
+    where
+      "assetId" in (
+        select
+          "completed_asset"."id"
+        from
+          "completed_asset"
+      )
+    returning
+      "album_asset"."assetId"
+  ),
+  "finished_upload" as (
+    delete from "asset_upload"
+    where
+      "assetId" in (
+        select
+          "completed_asset"."id"
+        from
+          "completed_asset"
+      )
+    returning
+      "asset_upload"."assetId"
   ),
   "shared_link" as (
     insert into

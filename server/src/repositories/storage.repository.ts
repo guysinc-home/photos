@@ -89,6 +89,17 @@ export class StorageRepository {
     return createWriteStream(filepath, { flags: 'a', flush, highWaterMark: 1024 * 1024 });
   }
 
+  async createWriteStreamAt(
+    filepath: string,
+    offset: number,
+    options?: { flush?: boolean; truncate?: boolean },
+  ): Promise<Writable> {
+    const flush = options?.flush ?? true;
+    const handle = await fs.open(filepath, options?.truncate ? 'w' : 'a');
+    await handle.close();
+    return createWriteStream(filepath, { flags: 'r+', start: offset, flush, highWaterMark: 1024 * 1024 });
+  }
+
   createOrOverwriteFile(filepath: string, buffer: Buffer) {
     return fs.writeFile(filepath, buffer, { flag: 'w' });
   }
