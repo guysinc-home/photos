@@ -36,16 +36,18 @@ Errors:
 - `404`: unknown upload, past its `max-age`, or created with other credentials (see below).
 - `409`: wrong offset; `Upload-Offset` gives the right one. Also returned when a shared link starts a file another client is already uploading; no `Location` is given.
 - `413` with `Upload-Limit`: the request body is larger than `max-append-size`.
-- `429`: the user already has `maxPartialUploads` unfinished uploads.
+- `403`: a shared link tried to start or continue a resumable upload.
+- `429`: the owner's own sessions and keys already have `maxPartialUploads` unfinished uploads. A shared link's uploads are counted separately and never block the owner.
 - `460`: the SHA‑1 doesn't match; the upload is deleted.
 - `500` on `POST`: the same client re-sent a file it is still uploading. Use `HEAD` and resume.
 - `503` with `Retry-After`: another request is still writing to this upload.
 
-Auth: a session, an API key with `asset.upload`, or a shared link with uploads allowed. Each upload is tied to whatever created it:
+Auth: a session, an API key with `asset.upload`, or a shared link with uploads allowed.
 
-- Only that session, API key or shared link can `HEAD`, `PATCH` or `DELETE` it.
-- A shared link never sees the owner's uploads or other links' uploads.
-- If the owner starts the same file with other credentials (a new login, say), the old upload is replaced.
+- **The owner's sessions and API keys share the owner's uploads.** A second device starting the same file gets `500` and resumes the same upload; nothing is deleted.
+- **A shared link uploads a whole file in one request.** It can't start a resumable upload (`Upload-Complete: ?0`) or `PATCH` (`403`), and if its request is cut off, the upload is deleted at once. So nothing a link starts outlives its request or holds the owner's quota.
+- **A shared link never sees the owner's uploads or other links' uploads.** For a file the owner is already uploading, it gets `409` with no `Location`.
+- **The owner's sessions and keys may replace an upload a link left behind.**
 
 ## Settings
 
@@ -62,7 +64,8 @@ Set these through `PUT /api/system-config` or the config file. The web admin pag
 
 - Unfinished uploads are `partial` assets. They have `hidden` visibility, so they stay out of the timeline and default search. Sync, background jobs, `bulk-upload-check` and the `x-immich-checksum` pre-check filter them out by status.
 - A stock `POST /api/assets` of the same file replaces a `partial` asset.
-- Generic asset routes (`/api/assets/...`) don't see unfinished uploads, so they can't be trashed, restored, edited or downloaded by id.
+- Generic asset routes (`/api/assets/...`) and the integrity checker don't see unfinished uploads, so they can't be trashed, restored, edited or downloaded by id.
+- A stock `POST /api/assets` that collides with an unfinished upload it can't replace gets `503` and retries later. It never gets "duplicate" for a file that isn't stored yet.
 - Requests writing to one upload exclude each other, and the cleanup job, cancel and stock replacement, through a claim on the upload's `asset_upload` row. A writer that stops refreshing it for 30 seconds loses it.
 - Migrations: `1793825597040-AddPartialAssetStatus` and `1793826084186-AddAssetUploadTable`. Both are reversible; to go back to a stock image, follow [rollback-to-stock.md](rollback-to-stock.md).
 - Server image: `ghcr.io/guysinc-home/immich-server`, built by `.github/workflows/fork-server-image.yml` on tags like `v3.4.0-photos.1`.

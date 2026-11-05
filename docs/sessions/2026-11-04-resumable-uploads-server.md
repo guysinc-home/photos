@@ -25,12 +25,18 @@ Ship the server half of chunked, resumable uploads from `docs/research/chunked-u
   - uploads tied to their creating session, key or link;
   - the stock replacement takes the claim;
   - partials hidden from generic asset routes.
+- **#5, pre-deploy round:**
+  - the owner's devices share uploads again;
+  - shared links are one-shot, so they can't hold quota or slots;
+  - the integrity checker skips partials;
+  - stock clients get 503 rather than a duplicate pointing at a partial.
 - **#6**: tag-only ghcr workflow (not run).
 - **#7**: endpoint note, rollback runbook, this record.
 
 ## Rejected in session
 
 - A Redis lease: the `asset_upload` row gives the same exclusivity without a new repository.
+- Binding uploads to one session: devices of one account deleted each other's progress.
 - Answering HEAD only for partial uploads: RUFH clients HEAD a finished upload to learn it completed, and upstream tests that. Shared links get 404 instead.
 - Strict caps under concurrency: the per-user cap can overshoot by the requests in flight.
 
