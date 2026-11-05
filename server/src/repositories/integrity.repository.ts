@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { type Insertable, type Kysely, sql } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
 import { DummyValue, GenerateSql } from 'src/decorators.js';
-import { AssetFileType, IntegrityReport } from 'src/enum.js';
+import { AssetFileType, AssetStatus, IntegrityReport } from 'src/enum.js';
 import { DB } from 'src/schema/index.js';
 import { IntegrityReportTable } from 'src/schema/tables/integrity-report.table.js';
 
@@ -143,6 +143,7 @@ export class IntegrityRepository {
         eb
           .selectFrom('asset')
           .where('asset.deletedAt', 'is', null)
+          .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
           .select('asset.originalPath as path')
           .select((eb) => [
             eb.ref('asset.id').$castTo<string | null>().as('assetId'),
@@ -195,6 +196,7 @@ export class IntegrityRepository {
         'integrity_report.id as reportId',
       ])
       .where('asset.isExternal', '=', sql.lit(false))
+      .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
       .$if(startMarker !== undefined, (qb) => qb.where('asset.createdAt', '>=', startMarker!))
       .orderBy('asset.createdAt', 'asc')
       .stream();

@@ -176,13 +176,14 @@ export class IntegrityService extends BaseService {
     const { path, assetId, fileAssetId } = await this.integrityRepository.getById(id);
 
     if (assetId) {
-      await this.assetRepository.updateAll([assetId], {
+      const assetIds = await this.assetRepository.withoutPartialUploads([assetId]);
+      await this.assetRepository.updateAll(assetIds, {
         deletedAt: new Date(),
         status: AssetStatus.Trashed,
       });
 
       await this.eventRepository.emit('AssetTrashAll', {
-        assetIds: [assetId],
+        assetIds,
         userId,
       });
 
@@ -694,7 +695,7 @@ export class IntegrityService extends BaseService {
     const byPath = reports.filter((report) => !report.assetId && !report.fileAssetId);
 
     if (byAsset.length > 0) {
-      const ids = byAsset.map(({ assetId }) => assetId!);
+      const ids = await this.assetRepository.withoutPartialUploads(byAsset.map(({ assetId }) => assetId!));
       await this.assetRepository.updateAll(ids, {
         deletedAt: new Date(),
         status: AssetStatus.Trashed,
