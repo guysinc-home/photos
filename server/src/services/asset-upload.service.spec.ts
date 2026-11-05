@@ -443,12 +443,71 @@ describe(AssetUploadService.name, () => {
       expect(mocks.storage.stat).not.toHaveBeenCalled();
     });
 
+    it('should refuse a resumable upload from a shared link before creating anything', async () => {
+      const response = res();
+      const dto = { contentLength: 10, uploadLength: 100, uploadComplete: false, version: 8 } as any;
+
+      await sut.startUpload(factory.auth({ sharedLink: { allowUpload: true } }), {} as any, response as any, dto);
+
+      expect(response.status).toHaveBeenCalledWith(403);
+      expect(mocks.asset.createWithMetadata).not.toHaveBeenCalled();
+    });
+
+    it('should refuse to resume from a shared link that may upload', async () => {
+      const response = res();
+
+      await sut.resumeUpload(
+        factory.auth({ sharedLink: { allowUpload: true } }),
+        {} as any,
+        response as any,
+        factory.uuid(),
+        { contentLength: 10, version: 8, uploadOffset: 0, uploadComplete: false } as any,
+      );
+
+      expect(response.status).toHaveBeenCalledWith(403);
+      expect(mocks.asset.getUploadCreator).not.toHaveBeenCalled();
+    });
+
+    it('should let any of the owner sessions act on an upload another of them started', async () => {
+      mocks.asset.getUploadCreator.mockResolvedValue({
+        status: AssetStatus.Partial,
+        sessionId: factory.uuid(),
+        apiKeyId: null,
+        sharedLinkId: null,
+      });
+      mocks.asset.getCompletionMetadata.mockResolvedValue(undefined);
+      const response = res();
+
+      await sut.cancelUpload(factory.auth({ session: { id: factory.uuid() } }), factory.uuid(), response as any);
+
+      expect(mocks.asset.claimUpload).toHaveBeenCalled();
+    });
+
+    it("should count only the requester's own kind of uploads against the cap", async () => {
+      await sut.onStart(authStub.user1, {
+        assetData: { filename: 'a.jpg', fileCreatedAt: new Date(), fileModifiedAt: new Date() },
+        checksum: Buffer.from('c'),
+        uploadLength: 10,
+      } as any);
+      const linkAuth = factory.auth({ sharedLink: { allowUpload: true } });
+      await sut.onStart(linkAuth, {
+        assetData: { filename: 'b.jpg', fileCreatedAt: new Date(), fileModifiedAt: new Date() },
+        checksum: Buffer.from('d'),
+        uploadLength: 10,
+      } as any);
+
+      expect(mocks.asset.countPartialUploads.mock.calls.map((call) => call[2])).toEqual([
+        null,
+        linkAuth.sharedLink!.id,
+      ]);
+    });
+
     it("should not hand a shared link the location of the owner's upload of the same file", async () => {
       const response = res();
       const dto = {
-        contentLength: 10,
+        contentLength: 100,
         uploadLength: 100,
-        uploadComplete: false,
+        uploadComplete: true,
         version: 8,
         checksum: Buffer.from('x'),
       };

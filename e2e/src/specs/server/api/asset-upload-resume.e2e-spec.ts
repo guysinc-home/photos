@@ -1,4 +1,11 @@
-import { AssetMediaStatus, getMyUser, LoginResponseDto, Permission, SharedLinkType } from '@immich/sdk';
+import {
+  AssetMediaStatus,
+  getMyUser,
+  login as loginDto,
+  LoginResponseDto,
+  Permission,
+  SharedLinkType,
+} from '@immich/sdk';
 import { createHash, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
@@ -10,6 +17,8 @@ import { app, asBearerAuth, baseUrl, testAssetDir, utils } from 'src/utils.js';
 import { serializeDictionary } from 'structured-headers';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+const login = (loginCredentialDto: { email: string; password: string }) => loginDto({ loginCredentialDto });
 
 const sha1 = (content: Buffer) => createHash('sha1').update(content).digest('base64');
 
@@ -449,22 +458,65 @@ describe('resumable uploads', () => {
       linkB = { header: 'x-immich-share-key', value: b.key };
     });
 
-    it('should only let the shared link that started an upload see, append to or cancel it', async () => {
+    it('should not let a shared link start or resume a resumable upload', async () => {
       const content = randomBytes(1000);
-      const started = await startUpload(linkA, content, content.subarray(0, 100));
-      const location = started.headers['location'];
+      const before = await getMyUser({ headers: asBearerAuth(user.accessToken) });
 
-      for (const other of [linkB, bearer(user.accessToken)]) {
-        await expect(getOffset(other, location)).resolves.toHaveProperty('status', 404);
-        await expect(append(other, location, 100, content.subarray(100), true)).resolves.toHaveProperty('status', 404);
-        await expect(request(baseUrl).delete(location).set(other.header, other.value)).resolves.toHaveProperty(
+      const started = await startUpload(linkA, content, content.subarray(0, 100));
+      expect(started.status).toBe(403);
+      expect(started.headers['location']).toBeUndefined();
+
+      const owners = await startUpload(bearer(user.accessToken), content, content.subarray(0, 100));
+      const location = owners.headers['location'];
+      await expect(append(linkA, location, 100, content.subarray(100), true)).resolves.toHaveProperty('status', 403);
+      for (const link of [linkA, linkB]) {
+        await expect(getOffset(link, location)).resolves.toHaveProperty('status', 404);
+        await expect(request(baseUrl).delete(location).set(link.header, link.value)).resolves.toHaveProperty(
           'status',
           404,
         );
       }
 
-      await expect(getOffset(linkA, location)).resolves.toEqual(expect.objectContaining({ status: 204, offset: 100 }));
-      await expect(append(linkA, location, 100, content.subarray(100), true)).resolves.toHaveProperty('status', 200);
+      const after = await getMyUser({ headers: asBearerAuth(user.accessToken) });
+      expect((after.quotaUsageInBytes ?? 0) - (before.quotaUsageInBytes ?? 0)).toBe(content.length);
+    });
+
+    it('should leave nothing behind when a shared link upload is cut off', async () => {
+      const content = randomBytes(200_000);
+      const before = await getMyUser({ headers: asBearerAuth(user.accessToken) });
+      const req = httpRequest({
+        hostname: '127.0.0.1',
+        port: 2285,
+        path: '/api/upload',
+        method: 'POST',
+        headers: {
+          [linkA.header]: linkA.value,
+          'Upload-Draft-Interop-Version': '8',
+          'Upload-Complete': '?1',
+          'Upload-Length': content.length.toString(),
+          'Content-Length': content.length.toString(),
+          'Repr-Digest': `sha=:${sha1(content)}:`,
+          'X-Immich-Asset-Data': assetDataFor('cut-off.jpg'),
+        },
+      });
+      req.on('error', () => {});
+      req.write(content.subarray(0, 50_000));
+      await setTimeout(300);
+      req.destroy();
+      await setTimeout(500);
+
+      const after = await getMyUser({ headers: asBearerAuth(user.accessToken) });
+      expect(after.quotaUsageInBytes).toBe(before.quotaUsageInBytes);
+      const check = await request(app)
+        .post('/assets/bulk-upload-check')
+        .set('Authorization', `Bearer ${user.accessToken}`)
+        .send({ assets: [{ id: 'cut-off', checksum: createHash('sha1').update(content).digest('hex') }] });
+      expect(check.body.results).toEqual([{ id: 'cut-off', action: 'accept' }]);
+      const client = await utils.connectDatabase();
+      const { rows } = await client.query(`SELECT id FROM asset WHERE checksum = $1`, [
+        createHash('sha1').update(content).digest(),
+      ]);
+      expect(rows).toEqual([]);
     });
 
     it("should keep a shared link away from the owner's uploads, even when it uploads the same file", async () => {
@@ -473,7 +525,7 @@ describe('resumable uploads', () => {
       const location = owners.headers['location'];
 
       await expect(getOffset(linkA, location)).resolves.toHaveProperty('status', 404);
-      const sameFile = await startUpload(linkA, content, content.subarray(0, 100));
+      const sameFile = await startUpload(linkA, content, content);
       expect(sameFile.status).toBe(409);
       expect(sameFile.headers['location']).toBeUndefined();
 
@@ -482,15 +534,29 @@ describe('resumable uploads', () => {
       );
     });
 
-    it('should let the owner restart an upload a shared link left unfinished', async () => {
-      const content = randomBytes(1000);
-      const linkUpload = await startUpload(linkA, content, content.subarray(0, 100));
+    it("should let two of the owner's devices share one upload instead of deleting each other's", async () => {
+      const content = randomBytes(3000);
+      const second = await login({ email: createUserDto.user1.email, password: createUserDto.user1.password });
+      const first = await startUpload(bearer(user.accessToken), content, content.subarray(0, 1000));
+      const location = first.headers['location'];
 
-      const restarted = await startUpload(bearer(user.accessToken), content, content.subarray(0, 100));
+      const sameFile = await startUpload(bearer(second.accessToken), content, content.subarray(0, 1000));
+      expect(sameFile.status).toBe(500);
+      expect(sameFile.text).toBe('Incomplete asset already exists');
 
-      expect(restarted.status).toBe(201);
-      expect(restarted.headers['location']).not.toBe(linkUpload.headers['location']);
-      await expect(getOffset(linkA, linkUpload.headers['location'])).resolves.toHaveProperty('status', 404);
+      await expect(getOffset(bearer(second.accessToken), location)).resolves.toEqual(
+        expect.objectContaining({ status: 204, offset: 1000 }),
+      );
+      await expect(
+        append(bearer(second.accessToken), location, 1000, content.subarray(1000, 2000), false),
+      ).resolves.toHaveProperty('status', 204);
+      await expect(
+        append(bearer(user.accessToken), location, 2000, content.subarray(2000), true),
+      ).resolves.toHaveProperty('status', 200);
+
+      const id = location.replace('/api/upload/', '');
+      const downloaded = await utils.downloadAsset(user.accessToken, id);
+      expect(sha1(Buffer.from(await downloaded.arrayBuffer()))).toBe(sha1(content));
     });
 
     it('should report a finished upload only to its owner, not to shared links', async () => {

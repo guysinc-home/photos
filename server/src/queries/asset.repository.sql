@@ -125,6 +125,15 @@ where
 returning
   "asset_upload"."assetId"
 
+-- AssetRepository.withoutPartialUploads
+select
+  "id"
+from
+  "asset"
+where
+  "id" in ($1)
+  and "status" != 'partial'
+
 -- AssetRepository.getUploadCreator
 select
   "asset"."status",
@@ -143,10 +152,12 @@ select
   count(*) as "count"
 from
   "asset"
+  left join "asset_upload" on "asset_upload"."assetId" = "asset"."id"
 where
-  "ownerId" = $1
-  and "status" = 'partial'
-  and "createdAt" > $2
+  "asset"."ownerId" = $1
+  and "asset"."status" = 'partial'
+  and "asset"."createdAt" > $2
+  and "asset_upload"."sharedLinkId" = $3
 
 -- AssetRepository.hasPartialUpload
 select

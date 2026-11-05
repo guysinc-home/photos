@@ -33,7 +33,7 @@ import {
   StorageFolder,
 } from 'src/enum.js';
 import { BaseService } from 'src/services/base.service.js';
-import { UPLOAD_CLAIM_WAIT_MS, claimPartialUpload, isUploadCreator } from 'src/utils/asset.util.js';
+import { UPLOAD_CLAIM_WAIT_MS, claimPartialUpload, isSameUploader } from 'src/utils/asset.util.js';
 import { isAssetChecksumConstraint } from 'src/utils/database.js';
 import { mimeTypes } from 'src/utils/mime-types.js';
 import { withRetry } from 'src/utils/misc.js';
@@ -75,6 +75,9 @@ export class AssetUploadService extends BaseService {
     if (contentLength > uploadLength) {
       return this.sendInconsistentLength(res);
     }
+    if (auth.sharedLink && (!isComplete || uploadLength !== contentLength)) {
+      return this.sendSharedLinkMustUploadInOneRequest(res);
+    }
     const { backup } = await this.getConfig({ withCache: true });
     if (this.exceedsAppendLimit(contentLength, backup)) {
       return this.sendAppendTooLarge(res, backup);
@@ -83,12 +86,12 @@ export class AssetUploadService extends BaseService {
     let started = await this.onStart(auth, dto);
     if (started.isDuplicate && started.status === AssetStatus.Partial) {
       const creator = await this.assetRepository.getUploadCreator(started.id, auth.user.id);
-      const isOwnUpload = !creator || isUploadCreator(auth, creator);
-      if (!isOwnUpload && auth.sharedLink) {
+      const sameUploader = !creator || isSameUploader(auth, creator);
+      if (!sameUploader && auth.sharedLink) {
         res.status(409).send('This file is already being uploaded');
         return;
       }
-      if (!isOwnUpload || this.isExpired(started.createdAt, backup)) {
+      if (!sameUploader || auth.sharedLink || this.isExpired(started.createdAt, backup)) {
         await this.removePartialUpload(started.id);
         started = await this.onStart(auth, dto);
       }
@@ -135,7 +138,14 @@ export class AssetUploadService extends BaseService {
           flush: isComplete,
           truncate: true,
         });
-        await this.receive(req, writeStream, contentLength);
+        try {
+          await this.receive(req, writeStream, contentLength);
+        } catch (error) {
+          if (auth.sharedLink) {
+            await this.onCancel(id, writePath);
+          }
+          throw error;
+        }
         if (isResumable) {
           this.setCompleteHeader(res, version, uploadComplete);
         }
@@ -157,6 +167,10 @@ export class AssetUploadService extends BaseService {
     this.logger.verboseFn(() => `Resuming upload for ${id}: ${JSON.stringify(dto)}`);
     const { uploadComplete, uploadLength, uploadOffset, contentLength, version } = dto;
     this.setCompleteHeader(res, version, false);
+    await this.requireUploadAccess(auth);
+    if (auth.sharedLink) {
+      return this.sendSharedLinkMustUploadInOneRequest(res);
+    }
     if (!(await this.requireUploadOwner(auth, id, res))) {
       return;
     }
@@ -436,7 +450,7 @@ export class AssetUploadService extends BaseService {
     await this.requireUploadAccess(auth);
     const creator = await this.assetRepository.getUploadCreator(id, auth.user.id);
     const isPartial = creator?.status === AssetStatus.Partial;
-    const allowed = isPartial ? isUploadCreator(auth, creator) : !!creator && !auth.sharedLink;
+    const allowed = isPartial ? isSameUploader(auth, creator) : !!creator && !auth.sharedLink;
     if (allowed) {
       return true;
     }
@@ -614,7 +628,11 @@ export class AssetUploadService extends BaseService {
     }
 
     const createdAfter = DateTime.now().minus({ hours: maxAgeHours }).toJSDate();
-    const count = await this.assetRepository.countPartialUploads(auth.user.id, createdAfter);
+    const count = await this.assetRepository.countPartialUploads(
+      auth.user.id,
+      createdAfter,
+      auth.sharedLink?.id ?? null,
+    );
     if (count >= maxPartialUploads) {
       throw new HttpException(
         `Too many unfinished uploads: finish or cancel one of ${count} first`,
@@ -630,6 +648,10 @@ export class AssetUploadService extends BaseService {
         await this.onCancel(id, asset.path);
       }
     });
+  }
+
+  private sendSharedLinkMustUploadInOneRequest(res: Response): void {
+    res.status(403).send('Shared links must upload a whole file in one request and cannot resume uploads');
   }
 
   private isExpired(createdAt: Date, { upload }: SystemConfig['backup']) {
