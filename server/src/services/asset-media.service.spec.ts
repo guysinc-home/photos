@@ -460,7 +460,7 @@ describe(AssetMediaService.name, () => {
       expect(mocks.job.queue).not.toHaveBeenCalledWith(expect.objectContaining({ name: JobName.FileDelete }));
     });
 
-    it('should only replace a partial upload once', async () => {
+    it('should never answer duplicate with a partial upload, even after replacing one', async () => {
       const file = {
         uuid: 'random-uuid',
         originalPath: 'fake_path/asset_1.jpeg',
@@ -491,11 +491,37 @@ describe(AssetMediaService.name, () => {
         size: 0,
       });
 
-      await expect(sut.uploadAsset(authStub.user1, createDto, file)).resolves.toEqual({
-        id: 'partial-id',
-        status: AssetMediaStatus.DUPLICATE,
-      });
+      await expect(sut.uploadAsset(authStub.user1, createDto, file)).rejects.toMatchObject({ status: 503 });
       expect(mocks.asset.create).toHaveBeenCalledTimes(2);
+    });
+
+    it('should ask a stock client to retry when the partial upload cannot be claimed', async () => {
+      const file = {
+        uuid: 'random-uuid',
+        originalPath: 'fake_path/asset_1.jpeg',
+        mimeType: 'image/jpeg',
+        checksum: Buffer.from('file hash', 'utf8'),
+        originalName: 'asset_1.jpeg',
+        size: 0,
+      };
+      const error = new Error('unique key violation');
+      (error as any).constraint_name = ASSET_CHECKSUM_CONSTRAINT;
+      mocks.asset.create.mockRejectedValue(error);
+      mocks.asset.getUploadAssetIdByChecksum.mockResolvedValue({
+        id: 'partial-id',
+        createdAt: new Date(),
+        status: AssetStatus.Partial,
+      });
+      mocks.asset.claimUpload.mockResolvedValue(false);
+      mocks.asset.hasPartialUpload.mockResolvedValue(false);
+      mocks.event.emit.mockResolvedValue();
+
+      await expect(sut.uploadAsset(authStub.user1, createDto, file)).rejects.toMatchObject({ status: 503 });
+      expect(mocks.asset.create).toHaveBeenCalledTimes(1);
+      expect(mocks.job.queue).toHaveBeenCalledWith({
+        name: JobName.FileDelete,
+        data: { files: ['fake_path/asset_1.jpeg', undefined] },
+      });
     });
 
     it('should throw an error if the duplicate could not be found by checksum', async () => {

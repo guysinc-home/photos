@@ -1,4 +1,11 @@
-import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  InternalServerErrorException,
+  NotFoundException,
+} from '@nestjs/common';
 import sanitize from 'sanitize-filename';
 import type { UploadFile, UploadRequest } from 'src/types.js';
 import { StorageCore } from 'src/cores/storage.core.js';
@@ -240,6 +247,14 @@ export class AssetMediaService extends BaseService {
         if (!duplicate) {
           this.logger.error(`Error locating duplicate for checksum constraint`);
           throw new InternalServerErrorException();
+        }
+
+        if (duplicate.status === AssetStatus.Partial) {
+          this.logger.warn(`Upload of an unfinished resumable upload ${duplicate.id} refused for now`);
+          throw new HttpException(
+            'An unfinished upload of this file is in progress; try again later',
+            HttpStatus.SERVICE_UNAVAILABLE,
+          );
         }
 
         if (auth.sharedLink) {
