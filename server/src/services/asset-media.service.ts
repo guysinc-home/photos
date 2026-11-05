@@ -1,4 +1,11 @@
-import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  InternalServerErrorException,
+  NotFoundException,
+} from '@nestjs/common';
 import sanitize from 'sanitize-filename';
 import type { UploadFile, UploadRequest } from 'src/types.js';
 import { StorageCore } from 'src/cores/storage.core.js';
@@ -21,6 +28,7 @@ import { AssetDownloadOriginalDto } from 'src/dtos/asset.dto.js';
 import { AuthDto, isEditedOnly, isMetadataHidden } from 'src/dtos/auth.dto.js';
 import {
   AssetFileType,
+  AssetStatus,
   AssetVisibility,
   CacheControl,
   ChecksumAlgorithm,
@@ -31,7 +39,7 @@ import {
 import { AuthRequest } from 'src/middleware/auth.guard.js';
 import { BaseService } from 'src/services/base.service.js';
 import { requireUploadAccess } from 'src/utils/access.js';
-import { asUploadRequest, onBeforeLink } from 'src/utils/asset.util.js';
+import { UPLOAD_CLAIM_WAIT_MS, asUploadRequest, claimPartialUpload, onBeforeLink } from 'src/utils/asset.util.js';
 import { isAssetChecksumConstraint } from 'src/utils/database.js';
 import { ImmichFileResponse, getFileNameWithoutExtension, getFilenameExtension } from 'src/utils/file.js';
 import { mimeTypes } from 'src/utils/mime-types.js';
@@ -51,7 +59,7 @@ export class AssetMediaService extends BaseService {
     await this.requireAccess({ auth, permission: Permission.AssetUpload, ids: [auth.user.id] });
 
     const asset = await this.assetRepository.getUploadAssetIdByChecksum(auth.user.id, fromChecksum(checksum));
-    if (!asset) {
+    if (!asset || asset.status === AssetStatus.Partial) {
       return;
     }
 
@@ -124,11 +132,21 @@ export class AssetMediaService extends BaseService {
     await this.jobRepository.queue({ name: JobName.FileDelete, data: { files: [uploadPath] } });
   }
 
-  async uploadAsset(
+  uploadAsset(
     auth: AuthDto,
     dto: AssetMediaCreateDto,
     file: UploadFile,
     sidecarFile?: UploadFile,
+  ): Promise<AssetMediaResponseDto> {
+    return this.createUploadedAsset(auth, dto, file, sidecarFile, true);
+  }
+
+  private async createUploadedAsset(
+    auth: AuthDto,
+    dto: AssetMediaCreateDto,
+    file: UploadFile,
+    sidecarFile: UploadFile | undefined,
+    canReplacePartialUpload: boolean,
   ): Promise<AssetMediaResponseDto> {
     let asset: Asset | undefined;
     try {
@@ -209,6 +227,14 @@ export class AssetMediaService extends BaseService {
 
       return { id: asset.id, status: AssetMediaStatus.CREATED };
     } catch (error: any) {
+      if (
+        canReplacePartialUpload &&
+        isAssetChecksumConstraint(error) &&
+        (await this.removePartialUpload(auth.user.id, file.checksum))
+      ) {
+        return this.createUploadedAsset(auth, dto, file, sidecarFile, false);
+      }
+
       // clean up files
       await this.jobRepository.queue({
         name: JobName.FileDelete,
@@ -221,6 +247,14 @@ export class AssetMediaService extends BaseService {
         if (!duplicate) {
           this.logger.error(`Error locating duplicate for checksum constraint`);
           throw new InternalServerErrorException();
+        }
+
+        if (duplicate.status === AssetStatus.Partial) {
+          this.logger.warn(`Upload of an unfinished resumable upload ${duplicate.id} refused for now`);
+          throw new HttpException(
+            'An unfinished upload of this file is in progress; try again later',
+            HttpStatus.SERVICE_UNAVAILABLE,
+          );
         }
 
         if (auth.sharedLink) {
@@ -346,6 +380,35 @@ export class AssetMediaService extends BaseService {
         };
       }),
     };
+  }
+
+  private async removePartialUpload(ownerId: string, checksum: Buffer): Promise<boolean> {
+    const existing = await this.assetRepository.getUploadAssetIdByChecksum(ownerId, checksum);
+    if (existing?.status !== AssetStatus.Partial) {
+      return false;
+    }
+
+    const abort = { assetId: existing.id, abortTime: new Date() };
+    await this.eventRepository.emit('UploadAbort', abort);
+    this.websocketRepository.serverSend('UploadAbort', abort);
+
+    const writerId = this.cryptoRepository.randomUUID();
+    if (!(await claimPartialUpload(this.assetRepository, existing.id, writerId, UPLOAD_CLAIM_WAIT_MS))) {
+      return false;
+    }
+    try {
+      const partial = await this.assetRepository.getCompletionMetadata(existing.id, ownerId);
+      if (partial?.status !== AssetStatus.Partial) {
+        return false;
+      }
+
+      this.logger.log(`Replacing partial upload ${existing.id} with a complete upload of the same file`);
+      await this.storageRepository.unlink(partial.path);
+      await this.assetRepository.removeAndDecrementQuota(existing.id);
+      return true;
+    } finally {
+      await this.assetRepository.releaseUploadClaim(existing.id, writerId);
+    }
   }
 
   private async addToSharedLink(sharedLink: AuthSharedLink, assetId: string) {

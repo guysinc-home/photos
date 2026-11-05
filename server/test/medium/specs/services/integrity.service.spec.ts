@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { text } from 'node:stream/consumers';
 import { StorageCore } from 'src/cores/storage.core.js';
-import { AssetFileType, IntegrityReport, JobName, JobStatus, SystemMetadataKey } from 'src/enum.js';
+import { AssetFileType, AssetStatus, IntegrityReport, JobName, JobStatus, SystemMetadataKey } from 'src/enum.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
 import { ConfigRepository } from 'src/repositories/config.repository.js';
 import { EventRepository } from 'src/repositories/event.repository.js';
@@ -105,6 +105,66 @@ describe(IntegrityService.name, () => {
         contentType: 'application/octet-stream',
         cacheControl: 'private_without_cache',
       });
+    });
+  });
+
+  describe('partial uploads', () => {
+    it('should not scan unfinished uploads for missing files or checksum mismatches', async () => {
+      const { ctx } = setup();
+      const { user } = await ctx.newUser();
+      await ctx.newAsset({ ownerId: user.id, status: AssetStatus.Partial });
+      const { asset: active } = await ctx.newAsset({ ownerId: user.id });
+      const integrity = ctx.get(IntegrityRepository);
+
+      const missing = await Array.fromAsync(integrity.streamAssetPathsForMissingFiles());
+      const checksums = await Array.fromAsync(integrity.streamAssetChecksums());
+
+      expect(missing.map(({ assetId }) => assetId)).toEqual([active.id]);
+      expect(checksums.map(({ assetId }) => assetId)).toEqual([active.id]);
+    });
+
+    it('should not trash an unfinished upload when its report is deleted', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(EventRepository).emit.mockResolvedValue(void 0);
+      const { user } = await ctx.newUser();
+      const { asset } = await ctx.newAsset({ ownerId: user.id, status: AssetStatus.Partial });
+      const { id } = await ctx.get(IntegrityRepository).create({
+        type: IntegrityReport.ChecksumFail,
+        path: asset.originalPath,
+        assetId: asset.id,
+      });
+
+      await sut.deleteIntegrityReport(user.id, id);
+
+      await expect(ctx.get(AssetRepository).getById(asset.id)).resolves.toEqual(
+        expect.objectContaining({ status: AssetStatus.Partial, deletedAt: null }),
+      );
+    });
+
+    it('should not trash unfinished uploads when reports are deleted in bulk', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(EventRepository).emit.mockResolvedValue(void 0);
+      const { user } = await ctx.newUser();
+      const { asset: partial } = await ctx.newAsset({ ownerId: user.id, status: AssetStatus.Partial });
+      const { asset: active } = await ctx.newAsset({ ownerId: user.id });
+      const integrity = ctx.get(IntegrityRepository);
+      const reports = await Promise.all(
+        [partial, active].map((asset) =>
+          integrity.create({ type: IntegrityReport.ChecksumFail, path: asset.originalPath, assetId: asset.id }),
+        ),
+      );
+
+      await sut.handleDeleteIntegrityReports({
+        reports: reports.map(({ id, assetId }) => ({ id, assetId, fileAssetId: null, path: '' })),
+      });
+
+      const assets = ctx.get(AssetRepository);
+      await expect(assets.getById(partial.id)).resolves.toEqual(
+        expect.objectContaining({ status: AssetStatus.Partial }),
+      );
+      await expect(assets.getById(active.id)).resolves.toEqual(
+        expect.objectContaining({ status: AssetStatus.Trashed }),
+      );
     });
   });
 

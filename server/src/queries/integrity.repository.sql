@@ -124,6 +124,7 @@ from
       "asset"
     where
       "asset"."deletedAt" is null
+      and "asset"."status" != 'partial'
     union all
     select
       "path",
@@ -152,6 +153,7 @@ from
 where
   "asset"."deletedAt" is null
   and "asset"."isExternal" = false
+  and "asset"."status" != 'partial'
   and "asset"."createdAt" >= $2
 order by
   "asset"."createdAt" asc

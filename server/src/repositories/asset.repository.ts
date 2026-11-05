@@ -550,14 +550,45 @@ export class AssetRepository {
     return !!claimed;
   }
 
-  @GenerateSql({ params: [DummyValue.UUID, DummyValue.DATE] })
-  async countPartialUploads(ownerId: string, createdAfter: Date): Promise<number> {
+  @GenerateSql({ params: [[DummyValue.UUID]] })
+  async withoutPartialUploads(ids: string[]): Promise<string[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+    const assets = await this.db
+      .selectFrom('asset')
+      .select('id')
+      .where('id', 'in', ids)
+      .where('status', '!=', sql.lit(AssetStatus.Partial))
+      .execute();
+    return assets.map(({ id }) => id);
+  }
+
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })
+  getUploadCreator(assetId: string, ownerId: string) {
+    return this.db
+      .selectFrom('asset')
+      .leftJoin('asset_upload', 'asset_upload.assetId', 'asset.id')
+      .select(['asset.status', 'asset_upload.sessionId', 'asset_upload.apiKeyId', 'asset_upload.sharedLinkId'])
+      .where('asset.id', '=', assetId)
+      .where('asset.ownerId', '=', ownerId)
+      .executeTakeFirst();
+  }
+
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.DATE, DummyValue.UUID] })
+  async countPartialUploads(ownerId: string, createdAfter: Date, sharedLinkId: string | null): Promise<number> {
     const { count } = await this.db
       .selectFrom('asset')
+      .leftJoin('asset_upload', 'asset_upload.assetId', 'asset.id')
       .select((eb) => eb.fn.countAll<number>().as('count'))
-      .where('ownerId', '=', ownerId)
-      .where('status', '=', sql.lit(AssetStatus.Partial))
-      .where('createdAt', '>', createdAfter)
+      .where('asset.ownerId', '=', ownerId)
+      .where('asset.status', '=', sql.lit(AssetStatus.Partial))
+      .where('asset.createdAt', '>', createdAfter)
+      .where((eb) =>
+        sharedLinkId === null
+          ? eb('asset_upload.sharedLinkId', 'is', null)
+          : eb('asset_upload.sharedLinkId', '=', sharedLinkId),
+      )
       .executeTakeFirstOrThrow();
     return Number(count);
   }
@@ -929,6 +960,7 @@ export class AssetRepository {
       .select(['id', 'checksum', 'deletedAt'])
       .where('ownerId', '=', asUuid(userId))
       .where('checksum', 'in', checksums)
+      .where('status', '!=', sql.lit(AssetStatus.Partial))
       .execute();
   }
 

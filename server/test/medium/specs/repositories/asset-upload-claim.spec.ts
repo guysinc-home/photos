@@ -63,6 +63,40 @@ describe('upload claims', () => {
     expect(row).toEqual(expect.objectContaining({ sessionId, sharedLinkId, apiKeyId: null, writerId: null }));
   });
 
+  it("should count a shared link's uploads apart from the owner's", async () => {
+    const { ctx, sut } = setup();
+    const { user } = await ctx.newUser();
+    const sharedLinkId = factory.uuid();
+    const newUpload = (credentials: { sessionId?: string; sharedLinkId?: string }) =>
+      sut.createWithMetadata(
+        {
+          id: factory.uuid(),
+          ownerId: user.id,
+          checksum: Buffer.from(factory.uuid()),
+          originalPath: '/upload/count.jpg',
+          fileCreatedAt: new Date(),
+          fileModifiedAt: new Date(),
+          localDateTime: new Date(),
+          type: AssetType.Image,
+          originalFileName: 'count.jpg',
+          checksumAlgorithm: ChecksumAlgorithm.sha1File,
+          visibility: AssetVisibility.Hidden,
+          status: AssetStatus.Partial,
+        },
+        10,
+        undefined,
+        credentials,
+      );
+    await newUpload({ sessionId: factory.uuid() });
+    await newUpload({ sessionId: factory.uuid() });
+    await newUpload({ sharedLinkId });
+    const since = new Date(Date.now() - 60_000);
+
+    await expect(sut.countPartialUploads(user.id, since, null)).resolves.toBe(2);
+    await expect(sut.countPartialUploads(user.id, since, sharedLinkId)).resolves.toBe(1);
+    await expect(sut.countPartialUploads(user.id, since, factory.uuid())).resolves.toBe(0);
+  });
+
   it('should give a partial upload to one writer at a time', async () => {
     const { ctx, sut } = setup();
     const id = await newPartialUpload(ctx);

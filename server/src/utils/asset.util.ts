@@ -253,3 +253,8 @@ export const claimPartialUpload = async (
   }
   return true;
 };
+
+type UploadCreator = { sessionId: string | null; apiKeyId: string | null; sharedLinkId: string | null };
+
+export const isSameUploader = (auth: AuthDto, creator: UploadCreator) =>
+  (creator.sharedLinkId ?? null) === (auth.sharedLink?.id ?? null);

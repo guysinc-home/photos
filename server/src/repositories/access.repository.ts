@@ -3,7 +3,7 @@ import { type Kysely, type NotNull, sql } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
 import { ChunkedSet, DummyValue, GenerateSql } from 'src/decorators.js';
 import { PersonUserRole } from 'src/dtos/person.dto.js';
-import { AlbumUserRole, AssetVisibility } from 'src/enum.js';
+import { AlbumUserRole, AssetStatus, AssetVisibility } from 'src/enum.js';
 import { PersonId } from 'src/repositories/person.repository.js';
 import { DB } from 'src/schema/index.js';
 import { asUuid } from 'src/utils/database.js';
@@ -196,6 +196,7 @@ class AssetAccess {
       .select('asset.id')
       .where('asset.id', 'in', [...assetIds])
       .where('asset.ownerId', '=', userId)
+      .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
       .$if(!hasElevatedPermission, (eb) => eb.where('asset.visibility', '!=', AssetVisibility.Locked))
       .execute()
       .then((assets) => new Set(assets.map((asset) => asset.id)));
@@ -216,6 +217,7 @@ class AssetAccess {
       .innerJoin('asset', (join) => join.onRef('asset.ownerId', '=', 'sharedBy.id').on('asset.deletedAt', 'is', null))
       .select('asset.id')
       .where('partner.sharedWithId', '=', userId)
+      .where('asset.status', '!=', sql.lit(AssetStatus.Partial))
       .where((eb) =>
         eb.or([
           eb('asset.visibility', '=', sql.lit(AssetVisibility.Timeline)),
