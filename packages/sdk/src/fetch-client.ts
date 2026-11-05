@@ -62,10 +62,15 @@ export type AdminConfigDatabaseBackupDto = {
     /** Keep last amount */
     keepLastAmount: number;
 };
+export type AdminConfigUploadBackupDto = {
+    /** Max age in hours */
+    maxAgeHours: number;
+};
 export type AdminConfigBackupsDto = {
     /** Whether the backups feature is enabled */
     beta?: boolean;
     database: AdminConfigDatabaseBackupDto;
+    upload: AdminConfigUploadBackupDto;
 };
 export type AdminConfigFFmpegRealtimeDto = {
     /** Enable real-time HLS transcoding (alpha) */
@@ -283,6 +288,8 @@ export type AdminConfigNightlyTasksDto = {
     generateMemories: boolean;
     /** Missing thumbnails */
     missingThumbnails: boolean;
+    /** Remove stale uploads */
+    removeStaleUploads: boolean;
     /** Start time (HH:MM) */
     startTime: string;
     /** Sync quota usage */
@@ -3271,6 +3278,9 @@ export type TimeBucketsResponseDto = {
 export type TrashResponseDto = {
     /** Number of items in trash */
     count: number;
+};
+export type UploadOkDto = {
+    id: string;
 };
 export type UserUpdateMeDto = {
     avatarColor?: (UserAvatarColor) | null;
@@ -7796,6 +7806,95 @@ export function restoreAssets({ bulkIdsDto }: {
         body: bulkIdsDto
     })));
 }
+export function getUploadOptions(opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText("/upload", {
+        ...opts,
+        method: "OPTIONS"
+    }));
+}
+export function startUpload({ contentLength, key, reprDigest, slug, uploadComplete, uploadDraftInteropVersion, xImmichAssetData }: {
+    contentLength: string;
+    key?: string;
+    reprDigest: string;
+    slug?: string;
+    uploadComplete?: string;
+    uploadDraftInteropVersion?: string;
+    xImmichAssetData: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: UploadOkDto;
+    }>(`/upload${QS.query(QS.explode({
+        key,
+        slug
+    }))}`, {
+        ...opts,
+        method: "POST",
+        headers: oazapfts.mergeHeaders(opts?.headers, {
+            "content-length": contentLength,
+            "repr-digest": reprDigest,
+            "upload-complete": uploadComplete,
+            "upload-draft-interop-version": uploadDraftInteropVersion,
+            "x-immich-asset-data": xImmichAssetData
+        })
+    }));
+}
+export function cancelUpload({ id, key, slug }: {
+    id: string;
+    key?: string;
+    slug?: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/upload/${encodeURIComponent(id)}${QS.query(QS.explode({
+        key,
+        slug
+    }))}`, {
+        ...opts,
+        method: "DELETE"
+    }));
+}
+export function getUploadStatus({ id, key, slug, uploadDraftInteropVersion }: {
+    id: string;
+    key?: string;
+    slug?: string;
+    uploadDraftInteropVersion: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/upload/${encodeURIComponent(id)}${QS.query(QS.explode({
+        key,
+        slug
+    }))}`, {
+        ...opts,
+        method: "HEAD",
+        headers: oazapfts.mergeHeaders(opts?.headers, {
+            "upload-draft-interop-version": uploadDraftInteropVersion
+        })
+    }));
+}
+export function resumeUpload({ contentLength, id, key, slug, uploadComplete, uploadDraftInteropVersion, uploadOffset }: {
+    contentLength: string;
+    id: string;
+    key?: string;
+    slug?: string;
+    uploadComplete: string;
+    uploadDraftInteropVersion: string;
+    uploadOffset: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: UploadOkDto;
+    }>(`/upload/${encodeURIComponent(id)}${QS.query(QS.explode({
+        key,
+        slug
+    }))}`, {
+        ...opts,
+        method: "PATCH",
+        headers: oazapfts.mergeHeaders(opts?.headers, {
+            "content-length": contentLength,
+            "upload-complete": uploadComplete,
+            "upload-draft-interop-version": uploadDraftInteropVersion,
+            "upload-offset": uploadOffset
+        })
+    }));
+}
 /**
  * Get all users
  */
@@ -8640,6 +8739,8 @@ export enum JobName {
     AssetFileMigration = "AssetFileMigration",
     AssetGenerateThumbnailsQueueAll = "AssetGenerateThumbnailsQueueAll",
     AssetGenerateThumbnails = "AssetGenerateThumbnails",
+    PartialAssetCleanup = "PartialAssetCleanup",
+    PartialAssetCleanupQueueAll = "PartialAssetCleanupQueueAll",
     AuditTableCleanup = "AuditTableCleanup",
     AuthChallengeCleanup = "AuthChallengeCleanup",
     DatabaseBackup = "DatabaseBackup",

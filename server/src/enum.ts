@@ -33,6 +33,7 @@ export enum ImmichHeader {
   CorrelationId = 'X-Correlation-ID',
   HlsInitSegment = 'x-immich-hls-msn',
   HlsPosition = 'x-immich-hls-pos',
+  AssetData = 'x-immich-asset-data',
 }
 
 export enum ImmichQuery {
@@ -449,6 +450,7 @@ export enum AssetStatus {
   Active = 'active',
   Trashed = 'trashed',
   Deleted = 'deleted',
+  Partial = 'partial',
 }
 
 export enum SourceType {
@@ -844,6 +846,7 @@ export enum BootstrapEventPriority {
   JobService = -190,
   // Initialize config after other bootstrap services, stop other services from using config on bootstrap
   SystemConfig = 100,
+  UploadService = 180,
   PluginSync = 190,
   // Load plugins into memory after sync
   PluginLoad = 200,
@@ -899,6 +902,8 @@ export enum JobName {
   AssetFileMigration = 'AssetFileMigration',
   AssetGenerateThumbnailsQueueAll = 'AssetGenerateThumbnailsQueueAll',
   AssetGenerateThumbnails = 'AssetGenerateThumbnails',
+  PartialAssetCleanup = 'PartialAssetCleanup',
+  PartialAssetCleanupQueueAll = 'PartialAssetCleanupQueueAll',
 
   AuditTableCleanup = 'AuditTableCleanup',
 
